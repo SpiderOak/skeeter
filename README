@@ -1,0 +1,4 @@
+This program is named after the ubiquitous reporter Rita Skeeter from the 
+Harry Potter novels. Like Rita, this program will LISTEN (to postgres) and
+PUBlish (to zeromq).
+

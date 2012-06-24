@@ -1,0 +1,41 @@
+###############################################################################
+# skeeterrc
+#
+# config file for skeeter 
+###############################################################################
+
+
+# zeromq parameters
+
+# the uri on which we publish database nofitications
+pub_socket_uri=tcp://127.0.0.1:6666
+
+# the high water mark: max number of messages to queue
+# if not specified, the defualt is 'unlimited'
+hwm=5
+
+# database credentials
+
+# database name
+database=postgres
+
+# timing parameters
+
+# timeout for poll() (in seconds)
+polling_interval=1
+
+# time (in seconds)to wait before checking notifications 
+# when no notifcations have been received
+notify_check_interval=1
+
+# frequency (in seconds) that a heartbeat message is published
+# note that the heartbeat interval should be signifcantly larger than
+# polling_interval and notify_check_interval
+heartbeat_interval=10
+
+# triggers to watch for
+# comma separated list of strings
+triggers=trigger1,trigger2,trigger3
+
+
+
