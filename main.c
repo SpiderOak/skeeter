@@ -3,6 +3,7 @@
  * 
  *
  *--------------------------------------------------------------------------*/
+#include <signal.h>
 #include <stdint.h>
 #include <time.h>
 #include <sys/types.h>
@@ -21,6 +22,32 @@ enum DESCRIPTOR_INDICES {
    HEARTBEAT_TIMER,
    DESCRIPTOR_COUNT
 };
+static int halt_signal = 0;
+
+static void
+signal_handler(int signal) {
+   debug("signal %d", signal);
+   halt_signal = 1;
+}
+
+// install the same signal handler for SIGINT and SIGTERM
+static int 
+install_signal_handler() {
+
+   struct sigaction action;
+   action.sa_handler = signal_handler;
+   sigemptyset(&action.sa_mask); 
+   action.sa_flags = 0;
+
+   check(sigaction(SIGINT, &action, NULL) == 0, "sigaction, SIGINT");
+   check(sigaction(SIGTERM, &action, NULL) == 0, "sigaction, SIGTERM");
+
+   return 0;
+
+error:
+
+   return -1;
+}
 
 // create and initialize a timerfd for use with poll
 // return the fd on success, -1 on error
@@ -49,7 +76,6 @@ error:
    return -1;
 }
 
-
 int
 main(int argc, char **argv, char **envp) {
    log_info("program starts");
@@ -65,9 +91,17 @@ main(int argc, char **argv, char **envp) {
    poll_items[HEARTBEAT_TIMER].fd = heartbeat_timerfd;
    poll_items[HEARTBEAT_TIMER].events = ZMQ_POLLIN;
 
-   while (1) {
+   check(install_signal_handler() == 0, "install signal handler");
+
+   while (!halt_signal) {
       debug("polling");
+
       int result = zmq_poll(poll_items, 1, POLLING_INTERVAL); 
+   
+      // getting a signal here could cause 'Interrupted system call'
+      // if we're shutting down, we don't care
+      if (halt_signal) break;
+
       check(result != -1, "polling");
       if (result == 0) continue;
 
@@ -80,6 +114,7 @@ main(int argc, char **argv, char **envp) {
       check(bytes_read == sizeof(expiration_count), "read timerfd");
       debug("timer fired expiration_count = %ld", expiration_count);
    } // while
+   debug("while loop broken");
 
    check(close(heartbeat_timerfd) == 0, "closing timerfd");
    check(zmq_term(zmq_context) == 0, "terminating zeromq")
