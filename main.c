@@ -12,6 +12,8 @@
 
 #include <zmq.h>
 
+#include <libpq-fe.h>
+
 #include "bstrlib.h"
 #include "dbg.h"
 
