@@ -16,12 +16,14 @@
 
 #include "bstrlib.h"
 #include "dbg.h"
+#include "display_strings.h"
 
 static const int ZMQ_THREAD_POOL_SIZE = 3;
 static const time_t TIMER_PERIOD = 15;
 static const long POLLING_INTERVAL = 5 * 1000 * 1000;
 enum DESCRIPTOR_INDICES {
    HEARTBEAT_TIMER,
+   POSTGRES_CONNECTION,
    DESCRIPTOR_COUNT
 };
 static int halt_signal = 0;
@@ -78,6 +80,30 @@ error:
    return -1;
 }
 
+// start the asynchronous connection process
+// returns connection handle on success, NULL on failure
+PGconn *
+start_postgres_connection() {
+   const char * keywords[] = {
+      "dbname",
+      NULL
+   };
+   const char * values[] = {
+      "postgres",
+      NULL
+   };
+
+   PGconn * connection = PQconnectStartParams(keywords, values, 0);
+   check(connection != NULL, "PQconnectStartParams");
+   check(PQstatus(connection) != CONNECTION_BAD, "CONNECTION_BAD")
+
+   return connection;
+
+error:
+ 
+   return NULL;
+}
+
 int
 main(int argc, char **argv, char **envp) {
    log_info("program starts");
@@ -88,10 +114,20 @@ main(int argc, char **argv, char **envp) {
    int heartbeat_timerfd = create_and_set_timer();
    check(heartbeat_timerfd != -1, "create_and_set_timer");
    
+   PGconn * postgres_connection = start_postgres_connection();
+   check(postgres_connection != NULL, "start_postgres_connection");
+   PostgresPollingStatusType polling_status = \
+      PQconnectPoll(postgres_connection);
+   check(polling_status == PGRES_POLLING_WRITING, 
+         "polling status = %s", POLLING_STATUS[polling_status]);
+
    zmq_pollitem_t poll_items[DESCRIPTOR_COUNT];
    poll_items[HEARTBEAT_TIMER].socket = NULL;
    poll_items[HEARTBEAT_TIMER].fd = heartbeat_timerfd;
    poll_items[HEARTBEAT_TIMER].events = ZMQ_POLLIN;
+   poll_items[POSTGRES_CONNECTION].socket = NULL;
+   poll_items[POSTGRES_CONNECTION].fd = 0;
+   poll_items[POSTGRES_CONNECTION].events = 0;
 
    check(install_signal_handler() == 0, "install signal handler");
 
