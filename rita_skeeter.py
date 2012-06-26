@@ -47,8 +47,9 @@ def _load_config():
     numeric_items = set(["hwm",
                          "polling_interval",
                          "notify_check_interval",
-                         "heartbeat_interval", ])
-    list_items = set(["triggers", ])
+                         "heartbeat_interval",
+                         "database_retry_delay", ])
+    list_items = set(["channels", ])
 
     config = dict()
     for line in open(os.path.expanduser("~/.skeeterrc"), "r"):
@@ -76,30 +77,30 @@ def _set_signal_handler(halt_event):
     """
     signal.signal(signal.SIGTERM, _create_signal_handler(halt_event))
 
-def _start_listening_triggers(config, state):
+def _start_listening_channels(config, state):
     """
-    Initialize the listening triggers
+    Initialize the listening channels
     """
-    log = logging.getLogger("_start_listening_triggers")
+    log = logging.getLogger("_start_listening_channels")
 
     # this is the point where we're connected to the database
     state["database_connect_time"] = time.time()
 
-    log.info("start listening to {0} triggers".format(len(config["triggers"])))
+    log.info("start listening to {0} channels".format(len(config["channels"])))
     state["cursor"] = state["database_connection"].cursor()
-    state["trigger_index"] = 0
+    state["channel_index"] = 0
 
-    state["callback"] = _continue_listening_triggers
+    state["callback"] = _continue_listening_channels
 
-def _continue_listening_triggers(config, state):
-    log = logging.getLogger("_continue_listening_triggers")
-    if state["trigger_index"] < len(config["triggers"]):
-        trigger = config["triggers"][state["trigger_index"]]
-        log.info("listening to {0}".format(trigger))
+def _continue_listening_channels(config, state):
+    log = logging.getLogger("_continue_listening_channels")
+    if state["channel_index"] < len(config["channels"]):
+        channel = config["channels"][state["channel_index"]]
+        log.info("listening to {0}".format(channel))
         # note: this wants a name, not a quoted SQL string
-        state["cursor"].execute("LISTEN {0}".format(trigger))
-        state["trigger_index"] += 1
-        state["callback"] = _continue_listening_triggers
+        state["cursor"].execute("LISTEN {0}".format(channel))
+        state["channel_index"] += 1
+        state["callback"] = _continue_listening_channels
     else:
         log.debug("committing")
         state["cursor"].execute("commit")
@@ -119,11 +120,11 @@ def _check_for_notifies(config, state):
                                                     notify.pid,
                                                     len(notify.payload)))
 
-        trigger = notify.channel
+        channel = notify.channel
         if notify.payload is None:
-            state["pub_socket"].send(trigger.encode("utf-8"))
+            state["pub_socket"].send(channel.encode("utf-8"))
         else:
-            state["pub_socket"].send(trigger.encode("utf-8"), zmq.SNDMORE)
+            state["pub_socket"].send(channel.encode("utf-8"), zmq.SNDMORE)
             state["pub_socket"].send(notify.payload.encode("utf-8"))
 
         state["callback"] = _check_for_notifies
@@ -144,11 +145,23 @@ def _check_heartbeat_time(config, state):
         _send_heartbeat(config, state)
         state["last_heartbeat_time"] = current_time
 
+def _reset_database_connection(config, state):
+    try:
+        state["database_connection"].close()
+    except Exception:
+        pass
+    state["database_connect_time"] = None
+    state["database_connection"] = _start_database_connection(config)
+    state["cursor"] = None
+    state["channel_index"] = None
+    state["callback"] = _start_listening_channels
+
 def _connection_state_loop(config, state):
     log = logging.getLogger("_connection_state_loop")
     _check_heartbeat_time(config, state)
 
-    connection_state = _psycopg2_states[state["database_connection"].poll()]
+    psycopg2_state = state["database_connection"].poll()
+    connection_state = _psycopg2_states[psycopg2_state]
     while not state["halt_event"].is_set() and  connection_state != "ok":
         log.debug("connection_state = {0}".format(connection_state))
         state["poller"].register(state["database_connection"], 
@@ -166,13 +179,13 @@ def _connection_state_loop(config, state):
                 raise PollError( "error status from poll {0}".format(status)) 
             break
 
-        connection_state = \
-            _psycopg2_states[state["database_connection"].poll()]
+        psycopg2_state = state["database_connection"].poll()
+        connection_state = _psycopg2_states[psycopg2_state]
 
     if state["halt_event"].is_set():
         return
 
-    return state["callback"](config, state)
+    state["callback"](config, state)
 
 def _start_database_connection(config):
     return psycopg2.connect(database=config["database"], 
@@ -202,8 +215,8 @@ def main():
         "database_connection"   : _start_database_connection(config),
         "pub_socket"            : zeromq_context.socket(zmq.PUB),
         "cursor"                : None,
-        "trigger_index"         : None,
-        "callback"              : _start_listening_triggers
+        "channel_index"         : None,
+        "callback"              : _start_listening_channels
     }
 
     hwm = config.get("hwm")
@@ -219,9 +232,12 @@ def main():
     _set_signal_handler(state["halt_event"])
     while not state["halt_event"].is_set():
         try:
-            delay_value = _connection_state_loop(config, state)
-            if delay_value is not None:
-                state["halt_event"].wait(delay_value)
+            _connection_state_loop(config, state)
+        except psycopg2.OperationalError as instance:
+            log.error("database error '{0}' retry in {1} seconds".format(
+                instance, config["database_retry_delay"]))
+            _reset_database_connection(config, state)
+            state["halt_event"].wait(config["database_retry_delay"])
         except KeyboardInterrupt:
             log.info("keyboard interrupt")
             state["halt_event"].set()

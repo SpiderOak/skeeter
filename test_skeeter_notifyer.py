@@ -60,13 +60,13 @@ def main():
     halt_event = Event()
     _set_signal_handler(halt_event)
     while not halt_event.is_set():
-        trigger = random.choice(config["triggers"])
-        data_size = random.randint(_low_data_size, _high_data_size)
+        channel = random.choice(config["channels"])
+        data_size = random.randint(_low_data_size, _high_data_size-1)
         data = 'a' * data_size
-        log.info("notifying {0} with {1} bytes".format(trigger, data_size))
+        log.info("notifying {0} with {1} bytes".format(channel, data_size))
         try:
             cursor = database_connection.cursor()
-            cursor.execute("select pg_notify(%s, %s);", [trigger, data, ])
+            cursor.execute("select pg_notify(%s, %s);", [channel, data, ])
             cursor.close()
             database_connection.commit()
         except KeyboardInterrupt:

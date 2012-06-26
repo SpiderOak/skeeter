@@ -57,9 +57,9 @@ def main():
 
     log.info("subscribing to heartbeat")
     sub_socket.setsockopt(zmq.SUBSCRIBE, "heartbeat".encode("utf-8"))
-    for trigger in config["triggers"]:
-        log.info("subscribing to {0}".format(trigger))
-        sub_socket.setsockopt(zmq.SUBSCRIBE, trigger.encode("utf-"))
+    for channel in config["channels"]:
+        log.info("subscribing to {0}".format(channel))
+        sub_socket.setsockopt(zmq.SUBSCRIBE, channel.encode("utf-8"))
 
     log.info("connecting sub_socket to {0}".format(config["pub_socket_uri"]))
     sub_socket.connect(config["pub_socket_uri"])
