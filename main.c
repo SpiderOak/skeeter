@@ -40,14 +40,14 @@ struct Config {
 
 struct State;
 
-typedef int (* state_callback)(const struct Config * config, 
-                               struct State * state);
+typedef int (* state_postgres_callback)(const struct Config * config, 
+                                        struct State * state);
 
 struct State {
    int heartbeat_timerfd;
    PGconn * postgres_connection;
+   state_postgres_callback postgres_callback;
    zmq_pollitem_t poll_items[DESCRIPTOR_COUNT];
-   state_callback callback;
 };
 
 //----------------------------------------------------------------------------
@@ -109,36 +109,6 @@ error:
 }
 
 //----------------------------------------------------------------------------
-// start the asynchronous connection process
-// returns 0 on success, 1 on failure
-int
-start_postgres_connection(const struct Config * config, struct State * state) {
-//----------------------------------------------------------------------------
-   // TODO: get keysword from config
-   const char * keywords[] = {
-      "dbname",
-      NULL
-   };
-   const char * values[] = {
-      "postgres",
-      NULL
-   };
-
-   state->postgres_connection = PQconnectStartParams(keywords, values, 0);
-   check(state->postgres_connection != NULL, "PQconnectStartParams");
-   check(PQstatus(state->postgres_connection) != CONNECTION_BAD, 
-         "CONNECTION_BAD");
-
-   state->callback = 
-
-   return 0;
-
-error:
- 
-   return 1;
-}
-
-//----------------------------------------------------------------------------
 struct State *
 create_state(const struct Config * config) {
 //----------------------------------------------------------------------------
@@ -150,8 +120,7 @@ create_state(const struct Config * config) {
    state->heartbeat_timerfd = create_and_set_timer(config->heartbeat_period);
    check(state->heartbeat_timerfd != -1, "create_and_set_timer");
 
-   state->postgres_connection = start_postgres_connection();
-   check(state->postgres_connection != NULL, "start_postgres_connection");
+   state->postgres_connection = NULL;
 
    state->poll_items[HEARTBEAT_TIMER].socket = NULL;
    state->poll_items[HEARTBEAT_TIMER].fd = state->heartbeat_timerfd;
@@ -178,6 +147,52 @@ clear_state(struct State * state) {
       PQfinish(state->postgres_connection); 
    }
    free(state);
+}
+
+//----------------------------------------------------------------------------
+int
+callback(const struct Config * config, struct State * state) {
+//----------------------------------------------------------------------------
+   debug("callback");
+   ConnStatusType status = PQstatus(state->postgres_connection);
+   check(status == CONNECTION_OK, 
+         "Invalid status in callback '%s'", CONN_STATUS[status]);
+   (PQstatus(conn) != CONNECTION_OK)
+   return 0;
+
+error:
+
+   return 1;
+}
+
+//----------------------------------------------------------------------------
+// start the asynchronous connection process
+// returns 0 on success, 1 on failure
+int
+start_postgres_connection(const struct Config * config, struct State * state) {
+//----------------------------------------------------------------------------
+   // TODO: get keysword from config
+   const char * keywords[] = {
+      "dbname",
+      NULL
+   };
+   const char * values[] = {
+      "postgres",
+      NULL
+   };
+
+   state->postgres_connection = PQconnectStartParams(keywords, values, 0);
+   check(state->postgres_connection != NULL, "PQconnectStartParams");
+   check(PQstatus(state->postgres_connection) != CONNECTION_BAD, 
+         "CONNECTION_BAD");
+
+   state->postgres_callback = callback;
+
+   return 0;
+
+error:
+ 
+   return 1;
 }
 
 //----------------------------------------------------------------------------
@@ -253,7 +268,7 @@ polling_loop(const struct Config * config, struct State * state) {
    enum POSTGRES_STATUS postgres_status = test_and_set_postgres_polling(state);
    check(postgres_status != POSTGRES_FAILED, "postgres_status");
    if (postgres_status == POSTGRES_OK) {
-      check(state->callback(config, state) == 0, "callback");
+      check(state->postgres_callback(config, state) == 0, "callback");
 
       // if the callback succeeded, we have some new postgres request started
       // we will pick that up the next time we loop
@@ -303,6 +318,9 @@ main(int argc, char **argv, char **envp) {
    void *zmq_context = zmq_init(config->zmq_thread_pool_size);
    check(zmq_context != NULL, "initializing zeromq");
    
+   check(start_postgres_connection(config, state) == 0, 
+         "start_postgres_connection");
+
    check(install_signal_handler() == 0, "install signal handler");
 
    while (!halt_signal) {
