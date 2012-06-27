@@ -3,7 +3,6 @@
  * 
  *
  *--------------------------------------------------------------------------*/
-#include <signal.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <strings.h>
@@ -19,6 +18,7 @@
 #include "bstrlib.h"
 #include "dbg.h"
 #include "display_strings.h"
+#include "signal_handler.h"
 
 static const long POLLING_INTERVAL = 5 * 1000 * 1000;
 enum DESCRIPTOR_INDICES {
@@ -26,7 +26,6 @@ enum DESCRIPTOR_INDICES {
    POSTGRES_CONNECTION,
    DESCRIPTOR_COUNT
 };
-static int halt_signal = 0;
 
 struct Config {
    int zmq_thread_pool_size;
@@ -120,31 +119,6 @@ void
 clear_state(struct State * state) {
    if (state->heartbeat_timerfd != -1) close(state->heartbeat_timerfd);
    free(state);
-}
-
-static void
-signal_handler(int signal) {
-   debug("signal %d", signal);
-   halt_signal = 1;
-}
-
-// install the same signal handler for SIGINT and SIGTERM
-static int 
-install_signal_handler() {
-
-   struct sigaction action;
-   action.sa_handler = signal_handler;
-   sigemptyset(&action.sa_mask); 
-   action.sa_flags = 0;
-
-   check(sigaction(SIGINT, &action, NULL) == 0, "sigaction, SIGINT");
-   check(sigaction(SIGTERM, &action, NULL) == 0, "sigaction, SIGTERM");
-
-   return 0;
-
-error:
-
-   return -1;
 }
 
 // start the asynchronous connection process
