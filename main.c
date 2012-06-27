@@ -20,11 +20,16 @@
 #include "display_strings.h"
 #include "signal_handler.h"
 
-static const long POLLING_INTERVAL = 5 * 1000 * 1000;
 enum DESCRIPTOR_INDICES {
    HEARTBEAT_TIMER,
    POSTGRES_CONNECTION,
    DESCRIPTOR_COUNT
+};
+
+enum POSTGRES_STATUS {
+   POSTGRES_OK,
+   POSTGRES_IN_PROGRESS,
+   POSTGRES_FAILED
 };
 
 struct Config {
@@ -33,13 +38,23 @@ struct Config {
    long zmq_polling_interval;
 };
 
+struct State;
+
+typedef int (* state_callback)(const struct Config * config, 
+                               struct State * state);
+
 struct State {
    int heartbeat_timerfd;
+   PGconn * postgres_connection;
    zmq_pollitem_t poll_items[DESCRIPTOR_COUNT];
+   state_callback callback;
 };
 
+//----------------------------------------------------------------------------
+// load config from skeeterrc
 const struct Config *
 load_config() {
+//----------------------------------------------------------------------------
    // TODO: load config from skeeterrc
    struct Config * config = malloc(sizeof(struct Config)); 
    check_mem(config);
@@ -56,16 +71,20 @@ error:
    return NULL;
 }
 
+//----------------------------------------------------------------------------
 // release resources used by config
 void
 clear_config(const struct Config * config) {
+//----------------------------------------------------------------------------
    free((void *) config);
 }
 
+//----------------------------------------------------------------------------
 // create and initialize a timerfd for use with poll
 // return the fd on success, -1 on error
 static int
 create_and_set_timer(time_t timer_period) {
+//----------------------------------------------------------------------------
 
    // create the timer fd
    int timerfd = timerfd_create(CLOCK_REALTIME, TFD_CLOEXEC | TFD_NONBLOCK);
@@ -89,8 +108,40 @@ error:
    return -1;
 }
 
+//----------------------------------------------------------------------------
+// start the asynchronous connection process
+// returns 0 on success, 1 on failure
+int
+start_postgres_connection(const struct Config * config, struct State * state) {
+//----------------------------------------------------------------------------
+   // TODO: get keysword from config
+   const char * keywords[] = {
+      "dbname",
+      NULL
+   };
+   const char * values[] = {
+      "postgres",
+      NULL
+   };
+
+   state->postgres_connection = PQconnectStartParams(keywords, values, 0);
+   check(state->postgres_connection != NULL, "PQconnectStartParams");
+   check(PQstatus(state->postgres_connection) != CONNECTION_BAD, 
+         "CONNECTION_BAD");
+
+   state->callback = 
+
+   return 0;
+
+error:
+ 
+   return 1;
+}
+
+//----------------------------------------------------------------------------
 struct State *
 create_state(const struct Config * config) {
+//----------------------------------------------------------------------------
 
    struct State * state = malloc(sizeof(struct State));
    check_mem(state);
@@ -99,9 +150,12 @@ create_state(const struct Config * config) {
    state->heartbeat_timerfd = create_and_set_timer(config->heartbeat_period);
    check(state->heartbeat_timerfd != -1, "create_and_set_timer");
 
+   state->postgres_connection = start_postgres_connection();
+   check(state->postgres_connection != NULL, "start_postgres_connection");
+
    state->poll_items[HEARTBEAT_TIMER].socket = NULL;
    state->poll_items[HEARTBEAT_TIMER].fd = state->heartbeat_timerfd;
-   state->poll_items[HEARTBEAT_TIMER].events = ZMQ_POLLIN;
+   state->poll_items[HEARTBEAT_TIMER].events = ZMQ_POLLIN | ZMQ_POLLERR;
 
    state->poll_items[POSTGRES_CONNECTION].socket = NULL;
    state->poll_items[POSTGRES_CONNECTION].fd = 0;
@@ -114,39 +168,130 @@ error:
    return NULL;
 }
 
+//----------------------------------------------------------------------------
 // release resources used by state
 void
 clear_state(struct State * state) {
+//----------------------------------------------------------------------------
    if (state->heartbeat_timerfd != -1) close(state->heartbeat_timerfd);
+   if (state->postgres_connection != NULL) {
+      PQfinish(state->postgres_connection); 
+   }
    free(state);
 }
 
-// start the asynchronous connection process
-// returns connection handle on success, NULL on failure
-PGconn *
-start_postgres_connection() {
-   const char * keywords[] = {
-      "dbname",
-      NULL
-   };
-   const char * values[] = {
-      "postgres",
-      NULL
-   };
+//----------------------------------------------------------------------------
+// poll the postgres connection to test status
+// if it wants to read or write the socket, set the polling item
+// return ok, in_progress or error
+enum POSTGRES_STATUS
+test_and_set_postgres_polling(struct State * state) {
+//----------------------------------------------------------------------------
+   PostgresPollingStatusType polling_status = \
+      PQconnectPoll(state->postgres_connection);
+   debug("polling status = %s", POLLING_STATUS[polling_status]);
+   switch (polling_status) {
 
-   PGconn * connection = PQconnectStartParams(keywords, values, 0);
-   check(connection != NULL, "PQconnectStartParams");
-   check(PQstatus(connection) != CONNECTION_BAD, "CONNECTION_BAD")
+      case PGRES_POLLING_FAILED:
+         return POSTGRES_FAILED;
 
-   return connection;
+      case PGRES_POLLING_READING:
+         state->poll_items[POSTGRES_CONNECTION].fd = \
+            PQsocket(state->postgres_connection);
+         state->poll_items[POSTGRES_CONNECTION].events = \
+            ZMQ_POLLIN | ZMQ_POLLERR;
+         return POSTGRES_IN_PROGRESS;
 
-error:
- 
-   return NULL;
+      case PGRES_POLLING_WRITING:
+         state->poll_items[POSTGRES_CONNECTION].fd = \
+            PQsocket(state->postgres_connection);
+         state->poll_items[POSTGRES_CONNECTION].events = \
+            ZMQ_POLLOUT | ZMQ_POLLERR;
+         return POSTGRES_IN_PROGRESS;
+
+      case PGRES_POLLING_OK:
+         return POSTGRES_OK;
+
+      case PGRES_POLLING_ACTIVE:
+         return POSTGRES_IN_PROGRESS;
+
+      default:
+         break;
+   } //switch 
+         
+   log_err("Unknown polling status %d", polling_status); 
+   return POSTGRES_FAILED;
 }
 
+//----------------------------------------------------------------------------
+// send the heartbeat message
+// return 0 on success, 1 on failure
+int
+send_heartbeat(const struct Config * config, struct State * state) {
+//----------------------------------------------------------------------------
+   uint64_t expiration_count = 0;
+   ssize_t bytes_read = read(state->heartbeat_timerfd, 
+                             &expiration_count, 
+                             sizeof(expiration_count));
+   check(bytes_read == sizeof(expiration_count), "read timerfd");
+   debug("heartbeat timer fired expiration_count = %ld", expiration_count);
+
+   return 0;
+
+error:
+
+   return 1;
+}
+
+//----------------------------------------------------------------------------
+// one call to poll()
+// return 0 on success, 1 on failure
+int 
+polling_loop(const struct Config * config, struct State * state) {
+//----------------------------------------------------------------------------
+
+   enum POSTGRES_STATUS postgres_status = test_and_set_postgres_polling(state);
+   check(postgres_status != POSTGRES_FAILED, "postgres_status");
+   if (postgres_status == POSTGRES_OK) {
+      check(state->callback(config, state) == 0, "callback");
+
+      // if the callback succeeded, we have some new postgres request started
+      // we will pick that up the next time we loop
+      state->poll_items[POSTGRES_CONNECTION].fd = 0;
+      state->poll_items[POSTGRES_CONNECTION].events = 0;
+      state->poll_items[POSTGRES_CONNECTION].revents = 0;
+   }
+
+   debug("polling");
+
+   int result = zmq_poll(state->poll_items, 
+                DESCRIPTOR_COUNT, 
+                config->zmq_polling_interval); 
+   
+   // getting a signal here could cause 'Interrupted system call'
+   // if we're shutting down, we don't care
+   if (halt_signal) return 0;
+
+   check(result != -1, "polling");
+   if (result == 0) return 0;
+
+   if (state->poll_items[HEARTBEAT_TIMER].revents != 0) { 
+      check((state->poll_items[HEARTBEAT_TIMER].revents & ZMQ_POLLERR) == 0, 
+            "heartbeat pollerr");
+      check(send_heartbeat(config, state) == 0, "send_heartbeat");
+   }
+
+   return 0;
+
+error:
+
+   return 1;
+}
+
+//----------------------------------------------------------------------------
 int
 main(int argc, char **argv, char **envp) {
+//----------------------------------------------------------------------------
    log_info("program starts");
    
    const struct Config * config = load_config();
@@ -158,38 +303,11 @@ main(int argc, char **argv, char **envp) {
    void *zmq_context = zmq_init(config->zmq_thread_pool_size);
    check(zmq_context != NULL, "initializing zeromq");
    
-   PGconn * postgres_connection = start_postgres_connection();
-   check(postgres_connection != NULL, "start_postgres_connection");
-   PostgresPollingStatusType polling_status = \
-      PQconnectPoll(postgres_connection);
-   check(polling_status == PGRES_POLLING_READING, 
-         "polling status = %s", POLLING_STATUS[polling_status]);
-
    check(install_signal_handler() == 0, "install signal handler");
 
    while (!halt_signal) {
-      debug("polling");
-
-      int result = zmq_poll(state->poll_items, 
-                            DESCRIPTOR_COUNT, 
-                            config->zmq_polling_interval); 
-   
-      // getting a signal here could cause 'Interrupted system call'
-      // if we're shutting down, we don't care
-      if (halt_signal) break;
-
-      check(result != -1, "polling");
-      if (result == 0) continue;
-
-      check(state->poll_items[HEARTBEAT_TIMER].revents == ZMQ_POLLIN, 
-            "poll result");
-
-      uint64_t expiration_count = 0;
-      ssize_t bytes_read = read(state->heartbeat_timerfd, 
-                                &expiration_count, 
-                                sizeof(expiration_count));
-      check(bytes_read == sizeof(expiration_count), "read timerfd");
-      debug("timer fired expiration_count = %ld", expiration_count);
+      int result = polling_loop(config, state);
+      check(result == 0, "polling_loop")
    } // while
    debug("while loop broken");
 

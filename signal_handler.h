@@ -6,13 +6,9 @@
  *--------------------------------------------------------------------------*/
 #if !defined(__SIGNAL_HANDLER_H__)
 #define __SIGNAL_HANDLER_H__
-#include <signal.h>
-
-#include "dbg.h"
 
 extern int halt_signal;
 
-// install the same signal handler for SIGINT and SIGTERM
 int 
 install_signal_handler();
 
