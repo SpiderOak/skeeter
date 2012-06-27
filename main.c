@@ -5,9 +5,11 @@
  *--------------------------------------------------------------------------*/
 #include <signal.h>
 #include <stdint.h>
-#include <time.h>
-#include <sys/types.h>
+#include <stdlib.h>
+#include <strings.h>
 #include <sys/timerfd.h>
+#include <sys/types.h>
+#include <time.h>
 #include <unistd.h>
 
 #include <zmq.h>
@@ -18,8 +20,6 @@
 #include "dbg.h"
 #include "display_strings.h"
 
-static const int ZMQ_THREAD_POOL_SIZE = 3;
-static const time_t TIMER_PERIOD = 15;
 static const long POLLING_INTERVAL = 5 * 1000 * 1000;
 enum DESCRIPTOR_INDICES {
    HEARTBEAT_TIMER,
@@ -27,6 +27,100 @@ enum DESCRIPTOR_INDICES {
    DESCRIPTOR_COUNT
 };
 static int halt_signal = 0;
+
+struct Config {
+   int zmq_thread_pool_size;
+   time_t heartbeat_period;
+   long zmq_polling_interval;
+};
+
+struct State {
+   int heartbeat_timerfd;
+   zmq_pollitem_t poll_items[DESCRIPTOR_COUNT];
+};
+
+const struct Config *
+load_config() {
+   // TODO: load config from skeeterrc
+   struct Config * config = malloc(sizeof(struct Config)); 
+   check_mem(config);
+   bzero(config, sizeof(struct Config));
+
+   config->zmq_thread_pool_size = 3;
+   config->heartbeat_period = 15;
+   config->zmq_polling_interval = 5 * 1000 * 1000;
+
+   return config;
+
+error:
+
+   return NULL;
+}
+
+// release resources used by config
+void
+clear_config(const struct Config * config) {
+   free((void *) config);
+}
+
+// create and initialize a timerfd for use with poll
+// return the fd on success, -1 on error
+static int
+create_and_set_timer(time_t timer_period) {
+
+   // create the timer fd
+   int timerfd = timerfd_create(CLOCK_REALTIME, TFD_CLOEXEC | TFD_NONBLOCK);
+   check(timerfd != -1, "timerfd_create");
+
+   // define the firing interval
+   struct itimerspec timer_value;
+   timer_value.it_interval.tv_sec = timer_period;
+   timer_value.it_interval.tv_nsec = 0;
+   timer_value.it_value.tv_sec = timer_period; // first expiration
+   timer_value.it_value.tv_nsec = 0;
+
+   // set the firing interval
+   int result = timerfd_settime(timerfd, 0, &timer_value, NULL);
+   check(result == 0, "timerfd_settime");
+
+   return timerfd;
+
+error:
+
+   return -1;
+}
+
+struct State *
+create_state(const struct Config * config) {
+
+   struct State * state = malloc(sizeof(struct State));
+   check_mem(state);
+   bzero(state, sizeof(struct State));
+
+   state->heartbeat_timerfd = create_and_set_timer(config->heartbeat_period);
+   check(state->heartbeat_timerfd != -1, "create_and_set_timer");
+
+   state->poll_items[HEARTBEAT_TIMER].socket = NULL;
+   state->poll_items[HEARTBEAT_TIMER].fd = state->heartbeat_timerfd;
+   state->poll_items[HEARTBEAT_TIMER].events = ZMQ_POLLIN;
+
+   state->poll_items[POSTGRES_CONNECTION].socket = NULL;
+   state->poll_items[POSTGRES_CONNECTION].fd = 0;
+   state->poll_items[POSTGRES_CONNECTION].events = 0;
+
+   return state;
+
+error:
+
+   return NULL;
+}
+
+// release resources used by state
+void
+clear_state(struct State * state) {
+   if (state->heartbeat_timerfd != -1) close(state->heartbeat_timerfd);
+   free(state);
+}
 
 static void
 signal_handler(int signal) {
@@ -47,33 +141,6 @@ install_signal_handler() {
    check(sigaction(SIGTERM, &action, NULL) == 0, "sigaction, SIGTERM");
 
    return 0;
-
-error:
-
-   return -1;
-}
-
-// create and initialize a timerfd for use with poll
-// return the fd on success, -1 on error
-static int
-create_and_set_timer() {
-
-   // create the timer fd
-   int timerfd = timerfd_create(CLOCK_REALTIME, TFD_CLOEXEC | TFD_NONBLOCK);
-   check(timerfd != -1, "timerfd_create");
-
-   // define the firing interval
-   struct itimerspec timer_value;
-   timer_value.it_interval.tv_sec = TIMER_PERIOD;
-   timer_value.it_interval.tv_nsec = 0;
-   timer_value.it_value.tv_sec = TIMER_PERIOD; // first expiration
-   timer_value.it_value.tv_nsec = 0;
-
-   // set the firing interval
-   int result = timerfd_settime(timerfd, 0, &timer_value, NULL);
-   check(result == 0, "timerfd_settime");
-
-   return timerfd;
 
 error:
 
@@ -107,34 +174,31 @@ error:
 int
 main(int argc, char **argv, char **envp) {
    log_info("program starts");
+   
+   const struct Config * config = load_config();
+   check(config != NULL, "load_config");
 
-   void *zmq_context = zmq_init(ZMQ_THREAD_POOL_SIZE);
+   struct State * state = create_state(config);
+   check(state != NULL, "create_state");
+
+   void *zmq_context = zmq_init(config->zmq_thread_pool_size);
    check(zmq_context != NULL, "initializing zeromq");
-
-   int heartbeat_timerfd = create_and_set_timer();
-   check(heartbeat_timerfd != -1, "create_and_set_timer");
    
    PGconn * postgres_connection = start_postgres_connection();
    check(postgres_connection != NULL, "start_postgres_connection");
    PostgresPollingStatusType polling_status = \
       PQconnectPoll(postgres_connection);
-   check(polling_status == PGRES_POLLING_WRITING, 
+   check(polling_status == PGRES_POLLING_READING, 
          "polling status = %s", POLLING_STATUS[polling_status]);
-
-   zmq_pollitem_t poll_items[DESCRIPTOR_COUNT];
-   poll_items[HEARTBEAT_TIMER].socket = NULL;
-   poll_items[HEARTBEAT_TIMER].fd = heartbeat_timerfd;
-   poll_items[HEARTBEAT_TIMER].events = ZMQ_POLLIN;
-   poll_items[POSTGRES_CONNECTION].socket = NULL;
-   poll_items[POSTGRES_CONNECTION].fd = 0;
-   poll_items[POSTGRES_CONNECTION].events = 0;
 
    check(install_signal_handler() == 0, "install signal handler");
 
    while (!halt_signal) {
       debug("polling");
 
-      int result = zmq_poll(poll_items, 1, POLLING_INTERVAL); 
+      int result = zmq_poll(state->poll_items, 
+                            DESCRIPTOR_COUNT, 
+                            config->zmq_polling_interval); 
    
       // getting a signal here could cause 'Interrupted system call'
       // if we're shutting down, we don't care
@@ -143,10 +207,11 @@ main(int argc, char **argv, char **envp) {
       check(result != -1, "polling");
       if (result == 0) continue;
 
-      check(poll_items[HEARTBEAT_TIMER].revents == ZMQ_POLLIN, "poll result");
+      check(state->poll_items[HEARTBEAT_TIMER].revents == ZMQ_POLLIN, 
+            "poll result");
 
       uint64_t expiration_count = 0;
-      ssize_t bytes_read = read(heartbeat_timerfd, 
+      ssize_t bytes_read = read(state->heartbeat_timerfd, 
                                 &expiration_count, 
                                 sizeof(expiration_count));
       check(bytes_read == sizeof(expiration_count), "read timerfd");
@@ -154,13 +219,15 @@ main(int argc, char **argv, char **envp) {
    } // while
    debug("while loop broken");
 
-   check(close(heartbeat_timerfd) == 0, "closing timerfd");
+   clear_state(state);
+   clear_config(config);
    check(zmq_term(zmq_context) == 0, "terminating zeromq")
    log_info("program terminates normally");
    return 0;
 
 error:
-   if (heartbeat_timerfd != -1) close(heartbeat_timerfd);
+   if (state != NULL) clear_state(state);
+   if (config != NULL) clear_config(config);
    if (zmq_context != NULL) zmq_term(zmq_context);
    log_info("program terminates with error");
    return 1;
