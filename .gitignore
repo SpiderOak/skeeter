@@ -11,5 +11,7 @@
 *.la
 *.a
 
+__pycache__/*
+
 # Compiled program
 skeeter
