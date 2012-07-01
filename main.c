@@ -151,17 +151,71 @@ clear_state(struct State * state) {
 
 //----------------------------------------------------------------------------
 int
-callback(const struct Config * config, struct State * state) {
+check_listen_command_cb(const struct Config * config, struct State * state) {
 //----------------------------------------------------------------------------
-   debug("callback");
+   PGresult * result = NULL;
+
+   debug("check_listen_commnd");
    ConnStatusType status = PQstatus(state->postgres_connection);
    check(status == CONNECTION_OK, 
          "Invalid status in callback '%s'", CONN_STATUS[status]);
-   (PQstatus(conn) != CONNECTION_OK)
+   
+   check(PQconsumeInput(state->postgres_connection) == 1,
+         "PQConsumeInput");
+   if (PQisBusy(state->postgres_connection)) {
+      debug("busy");
+      state->postgres_callback = check_listen_command_cb;
+   } else {
+      result = PQgetResult(state->postgres_connection);
+      if (result == NULL) {
+         debug("result is NULL");
+      } else {
+         ExecStatusType result_status = PQresultStatus(result);
+         check(result_status == PGRES_COMMAND_OK, 
+               "%s", EXEC_STATUS[result_status]);
+         debug("result OK");
+      }
+   }
+
+   if (result != NULL) (PQclear(result));
    return 0;
 
 error:
 
+   if (result != NULL) (PQclear(result));
+   return 1;
+}
+
+//----------------------------------------------------------------------------
+int
+send_listen_command_cb(const struct Config * config, struct State * state) {
+//----------------------------------------------------------------------------
+   bstring bquery;
+   const char * query = NULL;
+
+   debug("send_listen_commnd");
+   ConnStatusType status = PQstatus(state->postgres_connection);
+   check(status == CONNECTION_OK, 
+         "Invalid status in callback '%s'", CONN_STATUS[status]);
+   
+   bquery = bformat("LISTEN %s;", "channel1");
+   query = bstr2cstr(bquery, '?');
+   check_mem(query);
+
+   check(PQsendQuery(state->postgres_connection, query) == 1,
+         "PQsendQuery");
+   
+   bdestroy(bquery);
+   bcstrfree((char *) query);
+
+   state->postgres_callback = check_listen_command_cb;
+
+   return 0;
+
+error:
+
+   bdestroy(bquery);
+   bcstrfree((char *) query);
    return 1;
 }
 
@@ -186,7 +240,7 @@ start_postgres_connection(const struct Config * config, struct State * state) {
    check(PQstatus(state->postgres_connection) != CONNECTION_BAD, 
          "CONNECTION_BAD");
 
-   state->postgres_callback = callback;
+   state->postgres_callback = send_listen_command_cb;
 
    return 0;
 
@@ -265,16 +319,19 @@ int
 polling_loop(const struct Config * config, struct State * state) {
 //----------------------------------------------------------------------------
 
-   enum POSTGRES_STATUS postgres_status = test_and_set_postgres_polling(state);
-   check(postgres_status != POSTGRES_FAILED, "postgres_status");
-   if (postgres_status == POSTGRES_OK) {
-      check(state->postgres_callback(config, state) == 0, "callback");
+   if (state->postgres_connection != NULL) {
+      enum POSTGRES_STATUS postgres_status = \
+         test_and_set_postgres_polling(state);
+      check(postgres_status != POSTGRES_FAILED, "postgres_status");
+      if (postgres_status == POSTGRES_OK) {
+         check(state->postgres_callback(config, state) == 0, "callback");
 
-      // if the callback succeeded, we have some new postgres request started
-      // we will pick that up the next time we loop
-      state->poll_items[POSTGRES_CONNECTION].fd = 0;
-      state->poll_items[POSTGRES_CONNECTION].events = 0;
-      state->poll_items[POSTGRES_CONNECTION].revents = 0;
+         // if the callback succeeded, we have some postgres request started
+         // we will pick that up the next time we loop
+         state->poll_items[POSTGRES_CONNECTION].fd = 0;
+         state->poll_items[POSTGRES_CONNECTION].events = 0;
+         state->poll_items[POSTGRES_CONNECTION].revents = 0;
+      }
    }
 
    debug("polling");

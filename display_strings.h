@@ -12,4 +12,5 @@ extern const char * CONN_STATUS[];
 // strings for PostgresPollingStatusType
 extern const char * POLLING_STATUS[];
 
+extern const char * EXEC_STATUS[];
 #endif // !defined(__DISPLAY_STRINGS_H__)

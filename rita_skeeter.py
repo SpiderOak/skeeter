@@ -77,40 +77,50 @@ def _set_signal_handler(halt_event):
     """
     signal.signal(signal.SIGTERM, _create_signal_handler(halt_event))
 
-def _start_listening_channels(config, state):
+def _request_listen_on_channels(config, state):
     """
     Initialize the listening channels
     """
-    log = logging.getLogger("_start_listening_channels")
+    log = logging.getLogger("_request_listen_on_channels")
 
     # this is the point where we're connected to the database
-    state["database_connect_time"] = time.time()
 
-    log.info("start listening to {0} channels".format(len(config["channels"])))
+    log.info("request listen on {0} channels".format(len(config["channels"])))
+    line_list = list()
+    for channel in config["channels"]:
+        line = format("LISTEN {0};".format(channel))
+        log.debug(line)
+        line_list.append(line)
+
+    query = "".join(line_list)
     state["cursor"] = state["database_connection"].cursor()
-    state["channel_index"] = 0
+    state["cursor"].execute(query, [])
 
-    state["callback"] = _continue_listening_channels
+def _request_notifies_cb(config, state):
+    log = logging.getLogger("_request_notifies_cb")
 
-def _continue_listening_channels(config, state):
-    log = logging.getLogger("_continue_listening_channels")
-    if state["channel_index"] < len(config["channels"]):
-        channel = config["channels"][state["channel_index"]]
-        log.info("listening to {0}".format(channel))
-        # note: this wants a name, not a quoted SQL string
-        state["cursor"].execute("LISTEN {0}".format(channel))
-        state["channel_index"] += 1
-        state["callback"] = _continue_listening_channels
+    psycopg2_state = state["database_connection"].poll()
+    connection_state = _psycopg2_states[psycopg2_state]
+    log.debug("connection_state = {0}".format(connection_state))
+
+    if connection_state == "ok":
+        state["cursor"].close()
+        state["cursor"] = None
+        state["poller"].register(state["database_connection"], 
+                                 _poll_options["read"])
+        state["callback"] = _process_notifies_cb
     else:
-        log.debug("committing")
-        state["cursor"].execute("commit")
-        state["callback"] = _check_for_notifies
+        state["poller"].register(state["database_connection"], 
+                                 _poll_options[connection_state])
+        state["callback"] = _request_notifies_cb
 
-def _check_for_notifies(config, state):
-    log = logging.getLogger("_check_for_notifies")
+def _process_notifies_cb(config, state):
+    log = logging.getLogger("_process_notifies_cb")
 
-    if len(state["database_connection"].notifies) == 0:
-        return config["notify_check_interval"]
+    psycopg2_state = state["database_connection"].poll()
+    connection_state = _psycopg2_states[psycopg2_state]
+    log.debug("connection_state = {0}".format(connection_state))
+    assert connection_state == "ok"
 
     log.info("found {0} notifies".format(
         len(state["database_connection"].notifies)))
@@ -127,9 +137,31 @@ def _check_for_notifies(config, state):
             state["pub_socket"].send(channel.encode("utf-8"), zmq.SNDMORE)
             state["pub_socket"].send(notify.payload.encode("utf-8"))
 
-        state["callback"] = _check_for_notifies
+    state["poller"].register(state["database_connection"], 
+                             _poll_options["read"])
+    state["callback"] = _process_notifies_cb
 
-def _send_heartbeat(config, state):
+def _connect_to_database_cb(config, state):
+    """
+    go through the steps of connecting to the database asynchronoously
+    """
+    log = logging.getLogger("_connect_to_database_cb")
+    psycopg2_state = state["database_connection"].poll()
+    connection_state = _psycopg2_states[psycopg2_state]
+    log.debug("connection_state = {0}".format(connection_state))
+
+    if connection_state == "ok":
+        state["database_connect_time"] = time.time()
+        _request_listen_on_channels(config, state)
+        state["poller"].register(state["database_connection"], 
+                                 _poll_options["read"])
+        state["callback"] = _request_notifies_cb
+    else:
+        state["poller"].register(state["database_connection"], 
+                                 _poll_options[connection_state])
+        state["callback"] = _connect_to_database_cb
+
+def _send_heartbeat(_config, state):
     log = logging.getLogger("_send_heartbeat")
     state["heartbeat_sequence"] += 1
     message = "sequence={0},database_connect={1}".format(
@@ -145,52 +177,43 @@ def _check_heartbeat_time(config, state):
         _send_heartbeat(config, state)
         state["last_heartbeat_time"] = current_time
 
-def _reset_database_connection(config, state):
-    try:
-        state["database_connection"].close()
-    except Exception:
-        pass
-    state["database_connect_time"] = None
-    state["database_connection"] = _start_database_connection(config)
-    state["cursor"] = None
-    state["channel_index"] = None
-    state["callback"] = _start_listening_channels
+def _polling_loop(config, state):
+    log = logging.getLogger("_polling_loop")
 
-def _connection_state_loop(config, state):
-    log = logging.getLogger("_connection_state_loop")
     _check_heartbeat_time(config, state)
+    polling_interval = config["polling_interval"] * 1000.0
+    result_list = state["poller"].poll(polling_interval)
+    log.debug("result_list {0}".format(result_list))
+    if len(result_list) == 0:
+        return
 
-    psycopg2_state = state["database_connection"].poll()
-    connection_state = _psycopg2_states[psycopg2_state]
-    while not state["halt_event"].is_set() and  connection_state != "ok":
-        log.debug("connection_state = {0}".format(connection_state))
-        state["poller"].register(state["database_connection"], 
-                                 _poll_options[connection_state])
-        
-        polling_interval = config["polling_interval"] * 1000.0
-        while not state["halt_event"].is_set():
-            _check_heartbeat_time(config, state)
-            result_list = state["poller"].poll(polling_interval)
-            log.debug("result_list {0}".format(result_list))
-            if len(result_list) == 0:
-                continue
-            [(fd, status, )] = result_list
-            if status & select.POLLERR != 0:
-                raise PollError( "error status from poll {0}".format(status)) 
-            break
-
-        psycopg2_state = state["database_connection"].poll()
-        connection_state = _psycopg2_states[psycopg2_state]
+    [(_fd, status, )] = result_list
+    if status & select.POLLERR != 0:
+        raise PollError( "error status from poll {0}".format(status)) 
 
     if state["halt_event"].is_set():
         return
 
     state["callback"](config, state)
 
-def _start_database_connection(config):
-    return psycopg2.connect(database=config["database"], 
-                            async=1)
-    
+def _reset_database_connection(config, state):
+    if state["database_connection"] is not None:
+        try:
+            state["database_connection"].close()
+        except Exception:
+            pass
+    state["database_connect_time"] = None
+    state["database_connection"] = \
+        psycopg2.connect(database=config["database"], 
+                         async=1)
+    state["cursor"] = None
+    state["callback"] = _connect_to_database_cb
+    psycopg2_state = state["database_connection"].poll()
+    connection_state = _psycopg2_states[psycopg2_state]
+    if connection_state != "ok":
+        state["poller"].register(state["database_connection"], 
+                                 _poll_options[connection_state])
+
 def main():
     """
     main entry point
@@ -212,11 +235,10 @@ def main():
         "heartbeat_sequence"    : 0,
         "poller"                : select.poll(),
         "database_connect_time" : None,
-        "database_connection"   : _start_database_connection(config),
-        "pub_socket"            : zeromq_context.socket(zmq.PUB),
+        "database_connection"   : None,
         "cursor"                : None,
-        "channel_index"         : None,
-        "callback"              : _start_listening_channels
+        "pub_socket"            : zeromq_context.socket(zmq.PUB),
+        "callback"              : None,
     }
 
     hwm = config.get("hwm")
@@ -229,15 +251,17 @@ def main():
 
     return_value = 0
 
+    _reset_database_connection(config, state)
+
     _set_signal_handler(state["halt_event"])
     while not state["halt_event"].is_set():
         try:
-            _connection_state_loop(config, state)
+            _polling_loop(config, state)
         except psycopg2.OperationalError as instance:
             log.error("database error '{0}' retry in {1} seconds".format(
                 instance, config["database_retry_delay"]))
-            _reset_database_connection(config, state)
             state["halt_event"].wait(config["database_retry_delay"])
+            _reset_database_connection(config, state)
         except KeyboardInterrupt:
             log.info("keyboard interrupt")
             state["halt_event"].set()

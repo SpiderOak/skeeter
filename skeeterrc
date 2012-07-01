@@ -33,9 +33,9 @@ notify_check_interval=1
 # polling_interval and notify_check_interval
 heartbeat_interval=10
 
-# triggers to watch for
+# channels to watch for
 # comma separated list of strings
-triggers=trigger1,trigger2,trigger3
+channels=channel1,channel2,channel3
 
 
 
