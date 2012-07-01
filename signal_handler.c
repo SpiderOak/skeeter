@@ -6,16 +6,16 @@
  *--------------------------------------------------------------------------*/
 
 #include <signal.h>
+#include <stdbool.h>
 
 #include "dbg.h"
 
-int halt_signal = 0;
-
+bool halt_signal = false;
 
 static void
 signal_handler(int signal) {
    debug("signal %d", signal);
-   halt_signal = 1;
+   halt_signal = true;
 }
 
 // install the same signal handler for SIGINT and SIGTERM

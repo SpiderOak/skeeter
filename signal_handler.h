@@ -6,8 +6,9 @@
  *--------------------------------------------------------------------------*/
 #if !defined(__SIGNAL_HANDLER_H__)
 #define __SIGNAL_HANDLER_H__
+#include <stdbool.h>
 
-extern int halt_signal;
+extern bool halt_signal;
 
 int 
 install_signal_handler();
