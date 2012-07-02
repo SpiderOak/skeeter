@@ -37,6 +37,7 @@ struct Config {
    int zmq_thread_pool_size;
    time_t heartbeat_period;
    long zmq_polling_interval;
+   struct bstrList * channel_list;
 };
 
 struct State;
@@ -57,6 +58,14 @@ const struct Config *
 load_config() {
 //----------------------------------------------------------------------------
    // TODO: load config from skeeterrc
+   const char * input_strings[] = {
+      "channel1",
+      "channel2",
+      "channel3",
+      NULL
+   };
+
+   int i;
    struct Config * config = malloc(sizeof(struct Config)); 
    check_mem(config);
    bzero(config, sizeof(struct Config));
@@ -64,6 +73,16 @@ load_config() {
    config->zmq_thread_pool_size = 3;
    config->heartbeat_period = 15;
    config->zmq_polling_interval = 5 * 1000 * 1000;
+
+   config->channel_list = bstrListCreate();
+   check_mem(config->channel_list);
+
+   for (i=0; input_strings[i] != NULL; i++) {
+      check(bstrListAlloc(config->channel_list, i+1) == BSTR_OK,
+            "bstrListAlloc");
+      config->channel_list->entry[i] = bfromcstr(input_strings[i]);
+      config->channel_list->qty += 1;
+   }
 
    return config;
 
@@ -77,6 +96,9 @@ error:
 void
 clear_config(const struct Config * config) {
 //----------------------------------------------------------------------------
+   if (config->channel_list != NULL) {
+      bstrListDestroy(config->channel_list);
+   }
    free((void *) config);
 }
 
@@ -217,14 +239,24 @@ int
 send_listen_command(const struct Config * config, struct State * state) {
 //----------------------------------------------------------------------------
    bstring bquery;
+   bstring item;
+   const char * item_str;
    const char * query = NULL;
+   int i;
 
    debug("send_listen_commnd");
    ConnStatusType status = PQstatus(state->postgres_connection);
    check(status == CONNECTION_OK, 
          "Invalid status '%s'", CONN_STATUS[status]);
    
-   bquery = bformat("LISTEN %s;", "channel1");
+   bquery = bfromcstr("");
+   for (i=0; i < config->channel_list->qty; i++) {
+      item_str = bstr2cstr(config->channel_list->entry[i], '?');
+      check_mem(item_str);
+      item = bformat("LISTEN %s;", item_str);
+      bcstrfree((char *) item_str);
+      check(bconcat(bquery, item) == BSTR_OK, "bconcat");
+   }
    query = bstr2cstr(bquery, '?');
    check_mem(query);
 
