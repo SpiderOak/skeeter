@@ -30,7 +30,7 @@ load_config() {
 
    config->zmq_thread_pool_size = 3;
    config->heartbeat_period = 15;
-   config->zmq_polling_interval = 5 * 1000 * 1000;
+   config->epoll_timeout = 5 * 1000;
 
    config->channel_list = bstrListCreate();
    check_mem(config->channel_list);

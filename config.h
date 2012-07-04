@@ -11,7 +11,7 @@
 struct Config {
    int zmq_thread_pool_size;
    time_t heartbeat_period;
-   long zmq_polling_interval;
+   int epoll_timeout;
    struct bstrList * channel_list;
 };
 
