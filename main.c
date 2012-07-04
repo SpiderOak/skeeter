@@ -95,6 +95,17 @@ error:
 int
 check_notifications_cb(const struct Config * config, struct State * state) {
 //----------------------------------------------------------------------------
+   PGnotify * notification;
+
+   zmq_msg_t channel_message;
+   size_t channel_name_size;
+   int channel_message_flag;
+
+   zmq_msg_t extra_message;
+   size_t extra_data_size;
+
+   int send_status;
+
    debug("check_notifications_cb");
    ConnStatusType status = PQstatus(state->postgres_connection);
    check(status == CONNECTION_OK, 
@@ -105,9 +116,44 @@ check_notifications_cb(const struct Config * config, struct State * state) {
          PQerrorMessage(state->postgres_connection));
    bool more_notifications = true;
    while (more_notifications) {
-      PGnotify * notification = PQnotifies(state->postgres_connection);
+      notification = PQnotifies(state->postgres_connection);
       if (notification != NULL) {
          log_info("notification %s", notification->relname);
+         channel_name_size = strlen(notification->relname) + 1;
+         check(zmq_msg_init_size(&channel_message, channel_name_size) == 0,
+               "zmq_init_size %d",
+               (int) channel_name_size);
+         memcpy(zmq_msg_data(&channel_message), 
+                notification->relname, 
+                channel_name_size);
+         if (notification->extra == NULL) {
+            channel_message_flag = 0;
+            extra_data_size = 0;
+         } else {
+            extra_data_size = strlen(notification->extra) + 1;
+            check(zmq_msg_init_size(&extra_message, extra_data_size) == 0,
+               "zmq_init_size %d",
+               (int) extra_data_size);
+            memcpy(zmq_msg_data(&extra_message), 
+                   notification->extra, 
+                   extra_data_size);
+            channel_message_flag = ZMQ_SNDMORE;
+         }
+      
+         send_status = zmq_send(state->zmq_pub_socket, 
+                                &channel_message, 
+                                channel_message_flag);
+         check(send_status == 0, "zmq_send channel_message");
+         check(zmq_msg_close(&channel_message) == 0, "close channel_msessge");
+
+         if (channel_message_flag == ZMQ_SNDMORE) {
+            send_status = zmq_send(state->zmq_pub_socket, 
+                                   &extra_message, 
+                                   0);
+            check(send_status == 0, "zmq_send extra_message");
+            check(zmq_msg_close(&extra_message) == 0, "close extra_msessge");
+         }
+
          PQfreemem(notification);
       } else {
          more_notifications = false;
@@ -251,7 +297,6 @@ postgres_connection_cb(const struct Config * config, struct State * state) {
    polling_status = PQconnectPoll(state->postgres_connection);
    debug("polling status = %s", POLLING_STATUS[polling_status]);
 
-   int op = state->postgres_event.events == 0 ? EPOLL_CTL_ADD : EPOLL_CTL_MOD;
    switch (polling_status) {
       case PGRES_POLLING_READING:
          ctl_result = set_epoll_ctl_for_postgres(EPOLL_READ, 
