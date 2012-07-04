@@ -42,6 +42,9 @@ load_config() {
       config->channel_list->qty += 1;
    }
 
+   config->pub_socket_uri = bfromcstr("tcp://127.0.0.1:6666");
+   config->pub_socket_hwm = 5;
+
    return config;
 
 error:
@@ -54,6 +57,7 @@ error:
 void
 clear_config(const struct Config * config) {
 //----------------------------------------------------------------------------
+   bdestroy(config->pub_socket_uri); 
    if (config->channel_list != NULL) {
       bstrListDestroy(config->channel_list);
    }

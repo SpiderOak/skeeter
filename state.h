@@ -21,6 +21,8 @@ struct State {
    struct epoll_event postgres_event;
 
    int epoll_fd;
+
+   void * zmq_pub_socket;
 };
 
 extern struct State *

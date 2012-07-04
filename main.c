@@ -345,8 +345,13 @@ error:
 
 //----------------------------------------------------------------------------
 int
-initialize_state(struct State * state, const struct Config * config) {
+initialize_state(const struct Config * config, 
+                 void * zmq_context, 
+                 struct State * state) {
 //----------------------------------------------------------------------------
+   char * pub_socket_uri = NULL;
+   int result;
+
    state->heartbeat_timer_fd = create_and_set_timer(config->heartbeat_period);
    check(state->heartbeat_timer_fd != -1, "create_and_set_timer");
    state->heartbeat_timer_event.events = EPOLLIN | EPOLLERR;
@@ -363,10 +368,28 @@ initialize_state(struct State * state, const struct Config * config) {
    state->epoll_fd = epoll_create(1);
    check(state->epoll_fd != -1, "epoll_create");
 
+   state->zmq_pub_socket = zmq_socket(zmq_context, ZMQ_PUB);
+   check(state->zmq_pub_socket != NULL, "zmq_socket");
+   
+   result = zmq_setsockopt(state->zmq_pub_socket,
+                           ZMQ_HWM,
+                           &config->pub_socket_hwm,
+                           sizeof config->pub_socket_hwm);
+   check(result == 0, "zmq_setsockopt");
+
+   pub_socket_uri = bstr2cstr(config->pub_socket_uri, '?');
+   check(pub_socket_uri != NULL, "pub_socket_uri");
+
+   check(zmq_bind(state->zmq_pub_socket, pub_socket_uri) == 0, 
+         "bind %s",
+         pub_socket_uri);
+
+   bcstrfree(pub_socket_uri);
    return 0;
 
 error:
 
+   if (pub_socket_uri != NULL) bcstrfree(pub_socket_uri);
    return 1;
 }
 
@@ -389,7 +412,10 @@ main(int argc, char **argv, char **envp) {
    struct State * state = create_state();
    check(state != NULL, "create_state");
 
-   check(initialize_state(state, config) == 0, "initialize_state");
+   void *zmq_context = zmq_init(config->zmq_thread_pool_size);
+   check(zmq_context != NULL, "initializing zeromq");
+  
+   check(initialize_state(config, zmq_context, state) == 0, "initialize_state");
 
    // start polling the heartbeat timer
    ctl_result = epoll_ctl(state->epoll_fd,
@@ -402,9 +428,6 @@ main(int argc, char **argv, char **envp) {
    check(start_postgres_connection(config, state) == 0, 
          "start_postgres_connection");
 
-   void *zmq_context = zmq_init(config->zmq_thread_pool_size);
-   check(zmq_context != NULL, "initializing zeromq");
-  
    // main epoll loop, using callbacks to drive he program
    check(install_signal_handler() == 0, "install signal handler");
    while (!halt_signal) {

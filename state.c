@@ -7,6 +7,8 @@
 #include <strings.h>
 #include <unistd.h>
 
+#include <zmq.h>
+
 #include "dbg.h"
 #include "state.h"
 
@@ -25,6 +27,8 @@ create_state() {
    state->postgres_connection = NULL;
 
    state->epoll_fd = -1;
+
+   state->zmq_pub_socket = NULL;
 
    return state;
 
@@ -45,6 +49,7 @@ clear_state(struct State * state) {
       PQfinish(state->postgres_connection); 
    }
    if (state->epoll_fd != -1) close(state->epoll_fd);
+   if (state->zmq_pub_socket != NULL) zmq_close(state->zmq_pub_socket);
    free(state);
 }
 
