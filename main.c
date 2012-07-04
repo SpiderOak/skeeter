@@ -96,6 +96,7 @@ error:
 void
 clear_config(const struct Config * config) {
 //----------------------------------------------------------------------------
+   int i;
    if (config->channel_list != NULL) {
       bstrListDestroy(config->channel_list);
    }
@@ -254,8 +255,9 @@ send_listen_command(const struct Config * config, struct State * state) {
       item_str = bstr2cstr(config->channel_list->entry[i], '?');
       check_mem(item_str);
       item = bformat("LISTEN %s;", item_str);
-      bcstrfree((char *) item_str);
+      check(bcstrfree((char *) item_str) == BSTR_OK, "bcstrfree");
       check(bconcat(bquery, item) == BSTR_OK, "bconcat");
+      check(bdestroy(item) == BSTR_OK, "bdestroy(item)");
    }
    query = bstr2cstr(bquery, '?');
    check_mem(query);
