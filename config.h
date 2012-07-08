@@ -11,18 +11,24 @@
 
 #include "bstrlib.h"
 
+static const size_t MAX_POSTGRESQL_OPTIONS = 20;
+
 struct Config {
    int zmq_thread_pool_size;
-   time_t heartbeat_period;
-   int epoll_timeout;
-   struct bstrList * channel_list;
-   bstring pub_socket_uri;
+   const char *  pub_socket_uri;
    uint64_t pub_socket_hwm;
+
+   int epoll_timeout;
+   time_t heartbeat_interval;
+
+   const char ** postgresql_keywords;
+   const char ** postgresql_values;
+   struct bstrList * channel_list;
 };
 
 // load config from skeeterrc
 extern const struct Config *
-load_config();
+load_config(const char * config_path);
 
 // release resources used by config
 extern void

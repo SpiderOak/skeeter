@@ -24,12 +24,6 @@
 #include "signal_handler.h"
 #include "state.h"
 
-enum POSTGRES_STATUS {
-   POSTGRES_OK,
-   POSTGRES_IN_PROGRESS,
-   POSTGRES_FAILED
-};
-
 enum EPOLL_ACTION {
    EPOLL_READ,
    EPOLL_WRITE
@@ -343,17 +337,10 @@ start_postgres_connection(const struct Config * config, struct State * state) {
    PostgresPollingStatusType polling_status;
    int ctl_result;
 
-   // TODO: get keywords from config
-   const char * keywords[] = {
-      "dbname",
-      NULL
-   };
-   const char * values[] = {
-      "postgres",
-      NULL
-   };
-
-   state->postgres_connection = PQconnectStartParams(keywords, values, 0);
+   state->postgres_connection = \
+      PQconnectStartParams(config->postgresql_keywords, 
+                           config->postgresql_values, 
+                           0);
    check(state->postgres_connection != NULL, "PQconnectStartParams");
    check(PQstatus(state->postgres_connection) != CONNECTION_BAD, 
          "CONNECTION_BAD");
@@ -397,7 +384,8 @@ initialize_state(const struct Config * config,
    char * pub_socket_uri = NULL;
    int result;
 
-   state->heartbeat_timer_fd = create_and_set_timer(config->heartbeat_period);
+   state->heartbeat_timer_fd = \
+      create_and_set_timer(config->heartbeat_interval);
    check(state->heartbeat_timer_fd != -1, "create_and_set_timer");
    state->heartbeat_timer_event.events = EPOLLIN | EPOLLERR;
    state->heartbeat_timer_event.data.ptr = (void *) heartbeat_timer_cb;
@@ -422,14 +410,10 @@ initialize_state(const struct Config * config,
                            sizeof config->pub_socket_hwm);
    check(result == 0, "zmq_setsockopt");
 
-   pub_socket_uri = bstr2cstr(config->pub_socket_uri, '?');
-   check(pub_socket_uri != NULL, "pub_socket_uri");
-
-   check(zmq_bind(state->zmq_pub_socket, pub_socket_uri) == 0, 
+   check(zmq_bind(state->zmq_pub_socket, config->pub_socket_uri) == 0, 
          "bind %s",
-         pub_socket_uri);
+         config->pub_socket_uri);
 
-   bcstrfree(pub_socket_uri);
    return 0;
 
 error:
@@ -451,7 +435,7 @@ main(int argc, char **argv, char **envp) {
    log_info("program starts");
   
    // initilize our basic structs
-   const struct Config * config = load_config();
+   const struct Config * config = load_config("/home/dougfort/skeeter/skeeterrc");
    check(config != NULL, "load_config");
 
    struct State * state = create_state();
@@ -479,7 +463,7 @@ main(int argc, char **argv, char **envp) {
       wait_result = epoll_wait(state->epoll_fd,
                                event_list,
                                MAX_EPOLL_EVENTS,
-                               config->epoll_timeout); 
+                               config->epoll_timeout * 1000); 
       check(wait_result != -1, "epoll_wait")
       if (wait_result == 0) {
          debug("poll timeout");
