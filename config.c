@@ -10,7 +10,6 @@
 #include "bstrlib.h"
 #include "config.h"
 #include "dbg.h"
-#include "read_line.h"
 
 int
 bstr2int(bstring bstr) {
@@ -72,6 +71,22 @@ error:
    return -1;
 }
 
+int 
+parse_channel_list(struct Config * config, bstring entry) {
+   int i;
+
+   config->channel_list = bsplit(entry, ',');
+   check(config->channel_list != NULL, "bsplit");
+   for (i=0; i < config->channel_list->qty; i++) {
+      check(btrimws(config->channel_list->entry[i]) != BSTR_ERR,
+            "btrimws");
+   }
+
+   return 0;
+error:
+   return -1;
+}
+
 int
 set_config_defaults(struct Config * config) {
    // set defaults
@@ -88,6 +103,8 @@ set_config_defaults(struct Config * config) {
    config->postgresql_values = malloc(sizeof(char *));
    check_mem(config->postgresql_values);
    config->postgresql_values[0] = NULL;
+
+   config->channel_list = NULL;
 
    return 0;
 
@@ -106,17 +123,8 @@ load_config(const char * config_path) {
    bstring line = bfromcstr("");;
    int read_result;
    struct bstrList * split_list;
-   int i;
    bstring postgres_prefix = bfromcstr("postgresql-");
    int postgres_count = 0;
-
-   // TODO: load config from skeeterrc
-   const char * input_strings[] = {
-      "channel1",
-      "channel2",
-      "channel3",
-      NULL
-   };
 
    config = malloc(sizeof(struct Config)); 
    check_mem(config);
@@ -173,6 +181,9 @@ load_config(const char * config_path) {
                               postgres_count, 
                               split_list) == 0, 
                "postgres_entry");
+      } else if (biseqcstr(split_list->entry[0], "channels")) {
+         check(parse_channel_list(config, split_list->entry[1]) == 0,
+               "parse_channel_list");
       } else {
          log_err("unknown keyword '%s", bstr2cstr(split_list->entry[0], '?'));
       }
@@ -182,17 +193,6 @@ load_config(const char * config_path) {
 
    check(bdestroy(line) != BSTR_ERR, "bdestroy(line)");
    check(bdestroy(postgres_prefix) != BSTR_ERR, "bdestroy(postgres_prefix");
-
-   config->channel_list = bstrListCreate();
-   check_mem(config->channel_list);
-
-   for (i=0; input_strings[i] != NULL; i++) {
-      check(bstrListAlloc(config->channel_list, i+1) == BSTR_OK,
-            "bstrListAlloc");
-      config->channel_list->entry[i] = bfromcstr(input_strings[i]);
-      config->channel_list->qty += 1;
-   }
-
    check(bsclose(config_bstream) != NULL, "bsclose");
    check(fclose(config_stream) == 0, "fclose");
 
