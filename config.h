@@ -28,7 +28,7 @@ struct Config {
 
 // load config from skeeterrc
 extern const struct Config *
-load_config(const char * config_path);
+load_config(bstring config_path);
 
 // release resources used by config
 extern void

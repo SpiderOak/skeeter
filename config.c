@@ -57,7 +57,7 @@ postgres_entry(struct Config * config,
    config->postgresql_keywords[count-1] = bstr2cstr(keyword, '?');
    config->postgresql_keywords[count] = NULL;
 
-   check(bdestroy(keyword) != BSTR_ERR, "keyword");
+   check(bdestroy(keyword) == BSTR_OK, "keyword");
 
    config->postgresql_values = realloc(config->postgresql_values,
                                        (count+1) * sizeof(char *));
@@ -78,7 +78,7 @@ parse_channel_list(struct Config * config, bstring entry) {
    config->channel_list = bsplit(entry, ',');
    check(config->channel_list != NULL, "bsplit");
    for (i=0; i < config->channel_list->qty; i++) {
-      check(btrimws(config->channel_list->entry[i]) != BSTR_ERR,
+      check(btrimws(config->channel_list->entry[i]) == BSTR_OK,
             "btrimws");
    }
 
@@ -115,16 +115,20 @@ error:
 //----------------------------------------------------------------------------
 // load config from skeeterrc
 const struct Config *
-load_config(const char * config_path) {
+load_config(bstring config_path) {
 //----------------------------------------------------------------------------
    struct Config * config = NULL;
    FILE * config_stream = NULL;
    struct bStream * config_bstream;
+   const char * config_path_cstr = NULL;
    bstring line = bfromcstr("");;
    int read_result;
    struct bstrList * split_list;
    bstring postgres_prefix = bfromcstr("postgresql-");
    int postgres_count = 0;
+
+   config_path_cstr = bstr2cstr(config_path, '?');
+   check(config_path_cstr != NULL, "bstr2cstr");
 
    config = malloc(sizeof(struct Config)); 
    check_mem(config);
@@ -132,15 +136,15 @@ load_config(const char * config_path) {
 
    check(set_config_defaults(config) == 0, "set_config_defaults");
 
-   config_stream = fopen(config_path, "r");
-   check(config_stream != NULL, "fopen(%s)", config_path);
+   config_stream = fopen(config_path_cstr, "r");
+   check(config_stream != NULL, "fopen(%s)", config_path_cstr);
    config_bstream = bsopen((bNread) fread, config_stream);
    check(config_bstream != NULL, "bsopen");
 
    for (;;) {
       read_result = bsreadln(line, config_bstream, '\n');
       if (bseof(config_bstream)) break;
-      check(read_result != BSTR_ERR, "bsreadln");
+      check(read_result == BSTR_OK, "bsreadln");
 
       // skip blank lines and comments
       switch (bchar(line, 0)) {
@@ -159,8 +163,8 @@ load_config(const char * config_path) {
       split_list = bsplit(line, '=');
       check(split_list != NULL, "NULL split_list");
       check(split_list->qty == 2, "split error %d", split_list->qty);
-      check(btrimws(split_list->entry[0]) != BSTR_ERR, "trim[0]")
-      check(btrimws(split_list->entry[1]) != BSTR_ERR, "trim[1]")
+      check(btrimws(split_list->entry[0]) == BSTR_OK, "trim[0]")
+      check(btrimws(split_list->entry[1]) == BSTR_OK, "trim[1]")
 
       if (biseqcstr(split_list->entry[0], "zmq_thread_pool_size")) {
          config->zmq_thread_pool_size = bstr2int(split_list->entry[1]);
@@ -188,19 +192,21 @@ load_config(const char * config_path) {
          log_err("unknown keyword '%s", bstr2cstr(split_list->entry[0], '?'));
       }
 
-      check(bstrListDestroy(split_list) != BSTR_ERR, "bstrListDestroy");
+      check(bstrListDestroy(split_list) == BSTR_OK, "bstrListDestroy");
    }
 
-   check(bdestroy(line) != BSTR_ERR, "bdestroy(line)");
-   check(bdestroy(postgres_prefix) != BSTR_ERR, "bdestroy(postgres_prefix");
+   check(bdestroy(line) == BSTR_OK, "bdestroy(line)");
+   check(bdestroy(postgres_prefix) == BSTR_OK, "bdestroy(postgres_prefix");
    check(bsclose(config_bstream) != NULL, "bsclose");
    check(fclose(config_stream) == 0, "fclose");
+   check(bcstrfree((char *)config_path_cstr) == BSTR_OK, "bcstrfree");
 
    return config;
 
 error:
    if (config_bstream != NULL) bsclose(config_bstream);
    if (config_stream != NULL) fclose(config_stream);
+   if (config_path_cstr != NULL) bcstrfree((char *)config_path_cstr);
 
    return NULL;
 }

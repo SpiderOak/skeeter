@@ -18,6 +18,7 @@
 #include <libpq-fe.h>
 
 #include "bstrlib.h"
+#include "command_line.h"
 #include "config.h"
 #include "dbg.h"
 #include "display_strings.h"
@@ -37,9 +38,30 @@ typedef int (* epoll_callback)(const struct Config * config,
                                struct State * state);
 
 //---------------------------------------------------------------------------
+// compute the default path to the config file $HOME/.skeeterrc
+// return 0 for success, -1 for failure
+static int
+compute_default_config_path(bstring config_path) {
+//---------------------------------------------------------------------------
+   char * home_dir = NULL;
+
+   check(blength(config_path) == 0, "expecting empty bstring");
+
+   home_dir = getenv("HOME");
+   check(home_dir != NULL, "getenv");
+   check(bcatcstr(config_path, home_dir) == BSTR_OK, "bcatstr home_dir");
+   check(bcatcstr(config_path, "/.skeeterrc") == BSTR_OK, "bcatstr home_dir");
+
+   return 0;
+
+error:
+   return -1;
+}
+
+//---------------------------------------------------------------------------
 // utility function for setting up epoll for postgres
 // returns 0 on success, -1 on error
-int
+static int
 set_epoll_ctl_for_postgres(enum EPOLL_ACTION action, 
                            epoll_callback callback,
                            struct State * state) {
@@ -89,6 +111,7 @@ error:
 int
 check_notifications_cb(const struct Config * config, struct State * state) {
 //----------------------------------------------------------------------------
+   (void) config; // unused
    PGnotify * notification;
 
    zmq_msg_t channel_message;
@@ -165,6 +188,7 @@ error:
 int
 check_listen_command_cb(const struct Config * config, struct State * state) {
 //----------------------------------------------------------------------------
+   (void) config; // unused
    PGresult * result = NULL;
    int ctl_result;
 
@@ -245,6 +269,7 @@ error:
 int
 heartbeat_timer_cb(const struct Config * config, struct State * state) {
 //----------------------------------------------------------------------------
+   (void) config; // unused
    uint64_t expiration_count = 0;
    ssize_t bytes_read = read(state->heartbeat_timer_fd, 
                              &expiration_count, 
@@ -265,6 +290,7 @@ error:
 int
 restart_timer_cb(const struct Config * config, struct State * state) {
 //----------------------------------------------------------------------------
+   (void) config; // unused
    uint64_t expiration_count = 0;
    ssize_t bytes_read = read(state->restart_timer_fd, 
                              &expiration_count, 
@@ -426,32 +452,39 @@ error:
 int
 main(int argc, char **argv, char **envp) {
 //----------------------------------------------------------------------------
-   int ctl_result;
+   (void) envp; // unused
+   bstring config_path = bfromcstr("");
+   const struct Config * config = NULL;
+   struct State * state = NULL;
+   void *zmq_context = NULL;
+   int result;
    struct epoll_event event_list[MAX_EPOLL_EVENTS];
-   int wait_result;
    int i;
-   int callback_result;
 
    log_info("program starts");
-  
-   // initilize our basic structs
-   const struct Config * config = load_config("/home/dougfort/skeeter/skeeterrc");
-   check(config != NULL, "load_config");
 
-   struct State * state = create_state();
+   check(parse_command_line(argc, argv, config_path) == 0, "parse_");
+   if (blength(config_path) == 0) {
+      check(compute_default_config_path(config_path) == 0, "default config");
+   }
+
+   // initilize our basic structs
+   config = load_config(config_path);
+   check(config != NULL, "load_config");
+   state = create_state();
    check(state != NULL, "create_state");
 
-   void *zmq_context = zmq_init(config->zmq_thread_pool_size);
+   zmq_context = zmq_init(config->zmq_thread_pool_size);
    check(zmq_context != NULL, "initializing zeromq");
   
    check(initialize_state(config, zmq_context, state) == 0, "initialize_state");
 
    // start polling the heartbeat timer
-   ctl_result = epoll_ctl(state->epoll_fd,
-                          EPOLL_CTL_ADD,
-                          state->heartbeat_timer_fd,
-                          &state->heartbeat_timer_event);
-   check(ctl_result != -1, "epoll heartbeat timer");
+   result = epoll_ctl(state->epoll_fd,
+                      EPOLL_CTL_ADD,
+                      state->heartbeat_timer_fd,
+                      &state->heartbeat_timer_event);
+   check(result != -1, "epoll heartbeat timer");
 
    // start postgres connection process
    check(start_postgres_connection(config, state) == 0, 
@@ -460,20 +493,19 @@ main(int argc, char **argv, char **envp) {
    // main epoll loop, using callbacks to drive he program
    check(install_signal_handler() == 0, "install signal handler");
    while (!halt_signal) {
-      wait_result = epoll_wait(state->epoll_fd,
-                               event_list,
-                               MAX_EPOLL_EVENTS,
-                               config->epoll_timeout * 1000); 
-      check(wait_result != -1, "epoll_wait")
-      if (wait_result == 0) {
+      result = epoll_wait(state->epoll_fd,
+                          event_list,
+                          MAX_EPOLL_EVENTS,
+                          config->epoll_timeout * 1000); 
+      check(result != -1, "epoll_wait")
+      if (result == 0) {
          debug("poll timeout");
          continue;
       }
-      for (i=0; i < wait_result; i++) {
+      for (i=0; i < result; i++) {
          check(event_list[i].data.ptr != NULL, "NULL callback");
-         callback_result = \
-            ((epoll_callback) event_list[i].data.ptr)(config, state);
-         check(callback_result == 0, "callback");
+         result = ((epoll_callback) event_list[i].data.ptr)(config, state);
+         check(result == 0, "callback");
       }
    } // while
    debug("while loop broken");
@@ -481,6 +513,7 @@ main(int argc, char **argv, char **envp) {
    clear_state(state);
    clear_config(config);
    check(zmq_term(zmq_context) == 0, "terminating zeromq")
+   check(bdestroy(config_path) == BSTR_OK, "bdestroy");
    log_info("program terminates normally");
    return 0;
 
