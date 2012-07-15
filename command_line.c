@@ -15,16 +15,15 @@ static const char * optstring = "c:";
 // config_path unchanged if one of these arguments is not present
 // returns 0 for success, -1 for failure
 int
-parse_command_line(int argc, char **argv, bstring config_path) {
+parse_command_line(int argc, char **argv, bstring *config_path) {
 //----------------------------------------------------------------------------
    int opt;
-
-   check(blength(config_path) == 0, "expecting empty config_path");
 
    while ((opt = getopt(argc, argv, optstring)) != -1) {
       check(opt == 'c', "unexpectged opt '%d'", opt);
       check(optarg != NULL, "NULL arg");
-      check(bcatcstr(config_path, optarg) == BSTR_OK, "bcatcstr");
+      *config_path = bfromcstr(optarg);
+      check(*config_path != NULL, "bfromcstr");
    }
    
    return 0;

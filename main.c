@@ -22,6 +22,7 @@
 #include "config.h"
 #include "dbg.h"
 #include "display_strings.h"
+#include "message.h"
 #include "signal_handler.h"
 #include "state.h"
 
@@ -51,16 +52,15 @@ start_postgres_connection(const struct Config * config, struct State * state);
 // compute the default path to the config file $HOME/.skeeterrc
 // return 0 for success, -1 for failure
 static int
-compute_default_config_path(bstring config_path) {
+compute_default_config_path(bstring * config_path) {
 //---------------------------------------------------------------------------
    char * home_dir = NULL;
 
-   check(blength(config_path) == 0, "expecting empty bstring");
-
    home_dir = getenv("HOME");
    check(home_dir != NULL, "getenv");
-   check(bcatcstr(config_path, home_dir) == BSTR_OK, "bcatstr home_dir");
-   check(bcatcstr(config_path, "/.skeeterrc") == BSTR_OK, "bcatstr home_dir");
+   *config_path = bfromcstr(home_dir);
+   check(*config_path != NULL, "bfromcstr");
+   check(bcatcstr(*config_path, "/.skeeterrc") == BSTR_OK, "bcatstr home_dir");
 
    return 0;
 
@@ -123,15 +123,8 @@ check_notifications_cb(const struct Config * config, struct State * state) {
 //----------------------------------------------------------------------------
    (void) config; // unused
    PGnotify * notification;
-
-   zmq_msg_t channel_message;
-   size_t channel_name_size;
-   int channel_message_flag;
-
-   zmq_msg_t extra_message;
-   size_t extra_data_size;
-
-   int send_status;
+   int message_list_size;
+   struct bstrList * message_list;
 
    debug("check_notifications_cb");
    ConnStatusType status = PQstatus(state->postgres_connection);
@@ -149,42 +142,34 @@ check_notifications_cb(const struct Config * config, struct State * state) {
       notification = PQnotifies(state->postgres_connection);
       if (notification != NULL) {
          log_info("notification %s", notification->relname);
-         channel_name_size = strlen(notification->relname) + 1;
-         check(zmq_msg_init_size(&channel_message, channel_name_size) == 0,
-               "zmq_init_size %d",
-               (int) channel_name_size);
-         memcpy(zmq_msg_data(&channel_message), 
-                notification->relname, 
-                channel_name_size);
-         if (notification->extra == NULL) {
-            channel_message_flag = 0;
-            extra_data_size = 0;
-         } else {
-            extra_data_size = strlen(notification->extra) + 1;
-            check(zmq_msg_init_size(&extra_message, extra_data_size) == 0,
-               "zmq_init_size %d",
-               (int) extra_data_size);
-            memcpy(zmq_msg_data(&extra_message), 
-                   notification->extra, 
-                   extra_data_size);
-            channel_message_flag = ZMQ_SNDMORE;
-         }
-      
-         send_status = zmq_send(state->zmq_pub_socket, 
-                                &channel_message, 
-                                channel_message_flag);
-         check(send_status == 0, "zmq_send channel_message");
-         check(zmq_msg_close(&channel_message) == 0, "close channel_msessge");
 
-         if (channel_message_flag == ZMQ_SNDMORE) {
-            send_status = zmq_send(state->zmq_pub_socket, 
-                                   &extra_message, 
-                                   0);
-            check(send_status == 0, "zmq_send extra_message");
-            check(zmq_msg_close(&extra_message) == 0, "close extra_msessge");
+         // build the message list
+         message_list = bstrListCreate();
+         check(message_list != NULL, "bstrListCreate");
+
+         message_list_size = (notification->extra == NULL) ? 2 : 3;
+         check(bstrListAlloc(message_list, message_list_size) == BSTR_OK,
+               "bstrListAlloc");
+
+         message_list->entry[0] = bfromcstr(notification->relname);
+         check(message_list->entry[0] != NULL, "bfromcstr 0");
+         message_list->entry[1] = bfromcstr("meta");
+         check(message_list->entry[1] != NULL, "bfromcstr 1");
+         if (notification->extra != NULL) {
+            message_list->entry[2] = bfromcstr(notification->extra);
+            check(message_list->entry[2] != NULL, "bfromcstr 2");
          }
+         message_list->qty = message_list_size; 
 
          PQfreemem(notification);
+
+         // publish the message list
+         check(publish_message(message_list, state->zmq_pub_socket) == 0,
+               "publish_message");
+
+         // clean up the message list
+         check(bstrListDestroy(message_list) == BSTR_OK, "bstrListDestroy");
+
       } else {
          more_notifications = false;
       }
@@ -287,12 +272,34 @@ CALLBACK_RESULT_TYPE
 heartbeat_timer_cb(const struct Config * config, struct State * state) {
 //----------------------------------------------------------------------------
    (void) config; // unused
+   int message_list_size = 2;
+   struct bstrList * message_list;
    uint64_t expiration_count = 0;
    ssize_t bytes_read = read(state->heartbeat_timer_fd, 
                              &expiration_count, 
                              sizeof(expiration_count));
    check(bytes_read == sizeof(expiration_count), "read timerfd");
    debug("heartbeat timer fired expiration_count = %ld", expiration_count);
+
+   // build the message list
+   message_list = bstrListCreate();
+   check(message_list != NULL, "bstrListCreate");
+
+   check(bstrListAlloc(message_list, message_list_size) == BSTR_OK,
+         "bstrListAlloc");
+
+   message_list->entry[0] = bfromcstr("heartbeat");
+   check(message_list->entry[0] != NULL, "bfromcstr 0");
+   message_list->entry[1] = bfromcstr("meta");
+   check(message_list->entry[1] != NULL, "bfromcstr 1");
+   message_list->qty = message_list_size; 
+
+   // publish the message list
+   check(publish_message(message_list, state->zmq_pub_socket) == 0,
+         "publish_message");
+
+   // clean up the message list
+   check(bstrListDestroy(message_list) == BSTR_OK, "bstrListDestroy");
 
    return CALLBACK_OK;
 
@@ -466,6 +473,7 @@ initialize_state(const struct Config * config,
                            sizeof config->pub_socket_hwm);
    check(result == 0, "zmq_setsockopt");
 
+   log_info("binding PUB socket to '%s'", config->pub_socket_uri);
    check(zmq_bind(state->zmq_pub_socket, config->pub_socket_uri) == 0, 
          "bind %s",
          config->pub_socket_uri);
@@ -517,7 +525,7 @@ int
 main(int argc, char **argv, char **envp) {
 //----------------------------------------------------------------------------
    (void) envp; // unused
-   bstring config_path = bfromcstr("");
+   bstring config_path = NULL;
    const struct Config * config = NULL;
    struct State * state = NULL;
    void *zmq_context = NULL;
@@ -528,9 +536,9 @@ main(int argc, char **argv, char **envp) {
 
    log_info("program starts");
 
-   check(parse_command_line(argc, argv, config_path) == 0, "parse_");
+   check(parse_command_line(argc, argv, &config_path) == 0, "parse_");
    if (blength(config_path) == 0) {
-      check(compute_default_config_path(config_path) == 0, "default config");
+      check(compute_default_config_path(&config_path) == 0, "default config");
    }
 
    // initilize our basic structs
@@ -564,7 +572,9 @@ main(int argc, char **argv, char **envp) {
                           event_list,
                           MAX_EPOLL_EVENTS,
                           config->epoll_timeout * 1000); 
-      check(result != -1, "epoll_wait")
+      // we can get 'interrupted system call' from zeromq at shutdown
+      // we don't treat it as an error
+      check(halt_signal || result != -1, "epoll_wait")
       if (result == 0) {
          debug("poll timeout");
          continue;

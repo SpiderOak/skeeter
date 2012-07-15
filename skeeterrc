@@ -10,7 +10,7 @@
 zmq_thread_pool_size=3
 
 # the uri on which we publish database nofitications
-pub_socket_uri=tcp://*:6666
+pub_socket_uri=tcp://127.0.0.1:6666
 
 # the high water mark: max number of messages to queue
 # if not specified, the defualt is 'unlimited'

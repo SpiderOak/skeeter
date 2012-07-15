@@ -85,8 +85,9 @@ def main():
             return_value = 1
             halt_event.set()
         else:
-            log.info("{0} {1} bytes".format(topic.decode("utf-8"), 
-                                            len(message)))
+            log.info("{0} {1} {2} bytes".format(topic.decode("utf-8"), 
+                                                message.decode("utf-8"),
+                                                len(data)))
 
     log.info("program terminates with return_value {0}".format(return_value))
     sub_socket.close()

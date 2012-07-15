@@ -13,6 +13,6 @@
 // config_path unchanged if one of these arguments is not present
 // returns 0 for success, -1 for failure
 extern int
-parse_command_line(int argc, char ** argv, bstring config_path);
+parse_command_line(int argc, char ** argv, bstring * config_path);
 
 #endif // !defined(__COMMAND_LINE_H__)
