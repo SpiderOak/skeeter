@@ -21,6 +21,7 @@ struct Config {
    int epoll_timeout;
    time_t heartbeat_interval;
 
+   time_t database_retry_interval;
    const char ** postgresql_keywords;
    const char ** postgresql_values;
    struct bstrList * channel_list;

@@ -176,6 +176,8 @@ load_config(bstring config_path) {
          config->epoll_timeout = bstr2int(split_list->entry[1]);
       } else if (biseqcstr(split_list->entry[0], "heartbeat_interval")) {
          config->heartbeat_interval = bstr2int(split_list->entry[1]);
+      } else if (biseqcstr(split_list->entry[0], "database_retry_interval")) {
+         config->database_retry_interval = bstr2int(split_list->entry[1]);
       } else if (bstrncmp(split_list->entry[0], 
                           postgres_prefix, 
                           blength(postgres_prefix)) == 0) {

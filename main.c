@@ -30,12 +30,22 @@ enum EPOLL_ACTION {
    EPOLL_WRITE
 };
 
+typedef enum CALLBACK_RESULT {
+   CALLBACK_OK,
+   CALLBACK_DATABASE_ERROR,
+   CALLBACK_ERROR
+} CALLBACK_RESULT_TYPE;
+
 // The most epoll events that can be active
 // the restart_event and the postgres_event cannot be active at the same time
 static const int MAX_EPOLL_EVENTS = 2;
 
-typedef int (* epoll_callback)(const struct Config * config, 
-                               struct State * state);
+typedef CALLBACK_RESULT_TYPE (* epoll_callback)(const struct Config * config, 
+                                                struct State * state);
+
+// forward reference for callbacks
+int
+start_postgres_connection(const struct Config * config, struct State * state);
 
 //---------------------------------------------------------------------------
 // compute the default path to the config file $HOME/.skeeterrc
@@ -108,7 +118,7 @@ error:
 }
 
 //----------------------------------------------------------------------------
-int
+CALLBACK_RESULT_TYPE
 check_notifications_cb(const struct Config * config, struct State * state) {
 //----------------------------------------------------------------------------
    (void) config; // unused
@@ -128,9 +138,12 @@ check_notifications_cb(const struct Config * config, struct State * state) {
    check(status == CONNECTION_OK, 
          "Invalid status in callback '%s'", CONN_STATUS[status]);
    
-   check(PQconsumeInput(state->postgres_connection) == 1, 
-         "PQconsumeInput %s",
-         PQerrorMessage(state->postgres_connection));
+   if (PQconsumeInput(state->postgres_connection) != 1) {
+      log_err("PQconsumeInput %s", 
+              PQerrorMessage(state->postgres_connection));
+      return CALLBACK_DATABASE_ERROR;
+   }
+
    bool more_notifications = true;
    while (more_notifications) {
       notification = PQnotifies(state->postgres_connection);
@@ -177,15 +190,15 @@ check_notifications_cb(const struct Config * config, struct State * state) {
       }
    }
 
-   return 0;
+   return CALLBACK_OK;
 
 error:
 
-   return 1;
+   return CALLBACK_ERROR;
 }
 
 //----------------------------------------------------------------------------
-int
+CALLBACK_RESULT_TYPE
 check_listen_command_cb(const struct Config * config, struct State * state) {
 //----------------------------------------------------------------------------
    (void) config; // unused
@@ -194,8 +207,10 @@ check_listen_command_cb(const struct Config * config, struct State * state) {
 
    debug("check_listen_commnd_cb");
    ConnStatusType status = PQstatus(state->postgres_connection);
-   check(status == CONNECTION_OK, 
-         "Invalid status in callback '%s'", CONN_STATUS[status]);
+   if (status != CONNECTION_OK) { 
+      log_err("Invalid status in callback '%s'", CONN_STATUS[status]);
+      return CALLBACK_DATABASE_ERROR;
+   }
    
    result = PQgetResult(state->postgres_connection);
    if (result == NULL) {
@@ -206,18 +221,20 @@ check_listen_command_cb(const struct Config * config, struct State * state) {
       check(ctl_result == 0, "query complete");
    } else {
       debug("non-NULL result");
-      check(PQconsumeInput(state->postgres_connection) == 1, 
-            "PQconsumeInput %s",
-            PQerrorMessage(state->postgres_connection));
+      PQclear(result);
+      if (PQconsumeInput(state->postgres_connection) != 1) { 
+         log_err("PQconsumeInput %s", 
+                 PQerrorMessage(state->postgres_connection));
+         return CALLBACK_DATABASE_ERROR;
+      }
    }
 
-   if (result != NULL) PQclear(result);
-   return 0;
+   return CALLBACK_OK;
 
 error:
 
    if (result != NULL) PQclear(result);
-   return 1;
+   return CALLBACK_ERROR;
 }
 
 //----------------------------------------------------------------------------
@@ -266,7 +283,7 @@ error:
 //----------------------------------------------------------------------------
 // send the heartbeat message
 // return 0 on success, 1 on failure
-int
+CALLBACK_RESULT_TYPE
 heartbeat_timer_cb(const struct Config * config, struct State * state) {
 //----------------------------------------------------------------------------
    (void) config; // unused
@@ -277,20 +294,21 @@ heartbeat_timer_cb(const struct Config * config, struct State * state) {
    check(bytes_read == sizeof(expiration_count), "read timerfd");
    debug("heartbeat timer fired expiration_count = %ld", expiration_count);
 
-   return 0;
+   return CALLBACK_OK;
 
 error:
 
-   return 1;
+   return CALLBACK_ERROR;
 }
 
 //----------------------------------------------------------------------------
 // try to restart the postgres connection
 // return 0 on success, 1 on failure
-int
+CALLBACK_RESULT_TYPE
 restart_timer_cb(const struct Config * config, struct State * state) {
 //----------------------------------------------------------------------------
    (void) config; // unused
+   int result;
    uint64_t expiration_count = 0;
    ssize_t bytes_read = read(state->restart_timer_fd, 
                              &expiration_count, 
@@ -298,16 +316,27 @@ restart_timer_cb(const struct Config * config, struct State * state) {
    check(bytes_read == sizeof(expiration_count), "read timerfd");
    debug("restart timer fired expiration_count = %ld", expiration_count);
 
-   return 0;
+   // turn off the restart timer
+   result = epoll_ctl(state->epoll_fd,
+                      EPOLL_CTL_DEL,
+                      state->restart_timer_fd,
+                      &state->restart_timer_event);
+   check(result == 0, "epoll restart timer");
+   check(close(state->restart_timer_fd) == 0, "close");
+
+   if (start_postgres_connection(config, state) != 0) {
+      return CALLBACK_DATABASE_ERROR;
+   }
+
+   return CALLBACK_OK;
 
 error:
 
-   return 1;
+   return CALLBACK_ERROR;
 }
 
-
 //----------------------------------------------------------------------------
-int
+CALLBACK_RESULT_TYPE
 postgres_connection_cb(const struct Config * config, struct State * state) {
 //----------------------------------------------------------------------------
 
@@ -341,18 +370,18 @@ postgres_connection_cb(const struct Config * config, struct State * state) {
          break;
          
       default:
-         sentinel("invalid Postgres Polling Status %s postgres_connection_cb",  
+         log_err("invalid Postgres Polling Status %s postgres_connection_cb",  
                   POLLING_STATUS[polling_status]);
+         return CALLBACK_DATABASE_ERROR;
          
    } //switch 
 
-   return 0;
+   return CALLBACK_OK;
 
 error:
-
-   return 1;
-
+   return CALLBACK_ERROR;
 }
+
 
 //----------------------------------------------------------------------------
 // start the asynchronous connection process
@@ -400,6 +429,7 @@ error:
  
    return 1;
 }
+
 
 //----------------------------------------------------------------------------
 int
@@ -449,6 +479,40 @@ error:
 }
 
 //----------------------------------------------------------------------------
+// start the retry timer to re-try connecting to the database
+int
+set_up_database_retry(const struct Config * config, struct State * state) {
+//----------------------------------------------------------------------------
+   int result;
+
+   // don't check the state here, our socket fd may be no good
+   epoll_ctl(state->epoll_fd,
+             EPOLL_CTL_DEL,
+             PQsocket(state->postgres_connection),
+             &state->postgres_event);
+   state->postgres_event.events = 0;
+
+   PQfinish(state->postgres_connection); 
+   state->postgres_connection = NULL;
+
+   state->restart_timer_fd = \
+      create_and_set_timer(config->database_retry_interval);
+   check(state->restart_timer_fd != -1, "create_and_set_timer");
+   state->restart_timer_event.events = EPOLLIN | EPOLLERR;
+   state->restart_timer_event.data.ptr = (void *) restart_timer_cb;
+
+   result = epoll_ctl(state->epoll_fd,
+                      EPOLL_CTL_ADD,
+                      state->restart_timer_fd,
+                      &state->restart_timer_event);
+   check(result == 0, "epoll restart timer");
+
+   return 0;
+error:
+   return -1;
+}
+
+//----------------------------------------------------------------------------
 int
 main(int argc, char **argv, char **envp) {
 //----------------------------------------------------------------------------
@@ -458,6 +522,7 @@ main(int argc, char **argv, char **envp) {
    struct State * state = NULL;
    void *zmq_context = NULL;
    int result;
+   CALLBACK_RESULT_TYPE callback_result;
    struct epoll_event event_list[MAX_EPOLL_EVENTS];
    int i;
 
@@ -484,11 +549,13 @@ main(int argc, char **argv, char **envp) {
                       EPOLL_CTL_ADD,
                       state->heartbeat_timer_fd,
                       &state->heartbeat_timer_event);
-   check(result != -1, "epoll heartbeat timer");
+   check(result == 0, "epoll heartbeat timer");
 
    // start postgres connection process
-   check(start_postgres_connection(config, state) == 0, 
-         "start_postgres_connection");
+   if (start_postgres_connection(config, state) != 0) { 
+      log_err("unable to start posgres connection");
+      check(set_up_database_retry(config, state) == 0, "retry");
+   }
 
    // main epoll loop, using callbacks to drive he program
    check(install_signal_handler() == 0, "install signal handler");
@@ -504,8 +571,14 @@ main(int argc, char **argv, char **envp) {
       }
       for (i=0; i < result; i++) {
          check(event_list[i].data.ptr != NULL, "NULL callback");
-         result = ((epoll_callback) event_list[i].data.ptr)(config, state);
-         check(result == 0, "callback");
+         callback_result = \
+            ((epoll_callback) event_list[i].data.ptr)(config, state);
+         if (callback_result == CALLBACK_DATABASE_ERROR) {
+            log_err("database error");
+            check(set_up_database_retry(config, state) == 0, "retry");
+         } else {
+            check(callback_result == CALLBACK_OK, "callback");
+         } 
       }
    } // while
    debug("while loop broken");

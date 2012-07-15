@@ -24,6 +24,9 @@ epoll_timeout=10
 # frequency (in seconds) that a heartbeat message is published
 heartbeat_interval=10
 
+# interval (in seconds) that we try to re-connect to the database
+database_retry_interval=30
+
 ## -------------------------------------------------------------------------
 ## postgresql keyword options
 ## prefix with 'postgresql-'
