@@ -26,12 +26,12 @@ publish_message(const struct bstrList * message_list, void * zmq_pub_socket) {
 
    for (i=0; i < message_list->qty; i++) {
       message_size = blength(message_list->entry[i]);
-      check(zmq_msg_init_size(&message, message_size+1) == 0,
+      check(zmq_msg_init_size(&message, message_size) == 0,
             "zmq_init_size %d",
             (int) message_size);
       cstr = bstr2cstr(message_list->entry[i], '?');
       check(cstr != NULL, "bstr2cstr");
-      memcpy(zmq_msg_data(&message), cstr, message_size+1);
+      memcpy(zmq_msg_data(&message), cstr, message_size);
       check(bcstrfree((char *)cstr) == BSTR_OK, "bcstrfree");
       flag = (i == (message_list->qty)-1) ? 0 : ZMQ_SNDMORE;
       result = zmq_send(zmq_pub_socket, &message, flag);

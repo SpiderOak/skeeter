@@ -14,7 +14,7 @@
 
 //----------------------------------------------------------------------------
 struct State *
-create_state() {
+create_state(const struct Config * config) {
 //----------------------------------------------------------------------------
    struct State * state = malloc(sizeof(struct State));
    check_mem(state);
@@ -25,10 +25,16 @@ create_state() {
    state->restart_timer_fd = -1;
 
    state->postgres_connection = NULL;
+   state->postgres_connect_time = 0;
 
    state->epoll_fd = -1;
 
    state->zmq_pub_socket = NULL;
+
+   state->heartbeat_count = 0;
+
+   state->channel_counts = calloc(config->channel_list->qty, sizeof(uint64_t));
+   check_mem(state->channel_counts);
 
    return state;
 
@@ -50,6 +56,7 @@ clear_state(struct State * state) {
    }
    if (state->epoll_fd != -1) close(state->epoll_fd);
    if (state->zmq_pub_socket != NULL) zmq_close(state->zmq_pub_socket);
+   free(state->channel_counts);
    free(state);
 }
 

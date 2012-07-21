@@ -14,6 +14,7 @@ bool halt_signal = false;
 
 static void
 signal_handler(int signal) {
+   (void) signal; // unused
    debug("signal %d", signal);
    halt_signal = true;
 }

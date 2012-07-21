@@ -117,6 +117,23 @@ error:
    return -1;
 }
 
+
+//----------------------------------------------------------------------------
+// find the position of the channel name in config->channel_list
+// this is the corresponding position in state->channel_counts
+// TODO: if we sort the channel names we can do a binary search
+int
+_find_channel_index(const struct Config * config, const bstring channel) {
+//----------------------------------------------------------------------------
+   int i;
+   for (i=0; i < config->channel_list->qty; i++) {
+      if (bstrcmp(channel, config->channel_list->entry[i]) == 0) {
+         return i;
+      }
+   }
+   return -1;
+}
+
 //----------------------------------------------------------------------------
 CALLBACK_RESULT_TYPE
 check_notifications_cb(const struct Config * config, struct State * state) {
@@ -125,8 +142,8 @@ check_notifications_cb(const struct Config * config, struct State * state) {
    PGnotify * notification;
    int message_list_size;
    struct bstrList * message_list;
+   int channel_index = -1;
 
-   debug("check_notifications_cb");
    ConnStatusType status = PQstatus(state->postgres_connection);
    check(status == CONNECTION_OK, 
          "Invalid status in callback '%s'", CONN_STATUS[status]);
@@ -141,7 +158,6 @@ check_notifications_cb(const struct Config * config, struct State * state) {
    while (more_notifications) {
       notification = PQnotifies(state->postgres_connection);
       if (notification != NULL) {
-         log_info("notification %s", notification->relname);
 
          // build the message list
          message_list = bstrListCreate();
@@ -151,10 +167,24 @@ check_notifications_cb(const struct Config * config, struct State * state) {
          check(bstrListAlloc(message_list, message_list_size) == BSTR_OK,
                "bstrListAlloc");
 
+         // first message: topic
          message_list->entry[0] = bfromcstr(notification->relname);
          check(message_list->entry[0] != NULL, "bfromcstr 0");
-         message_list->entry[1] = bfromcstr("meta");
-         check(message_list->entry[1] != NULL, "bfromcstr 1");
+
+         // second message: meta data
+         channel_index = _find_channel_index(config, message_list->entry[0]);
+         check(channel_index != -1, "channel_index");
+         state->channel_counts[channel_index]++;
+         debug("%s %ld", 
+               notification->relname, 
+               state->channel_counts[channel_index]);
+         message_list->entry[1] = \
+            bformat("timestamp=%d;sequence=%d",
+                    time(NULL),
+                    state->channel_counts[channel_index]);
+         check(message_list->entry[1] != NULL, "bformat");
+
+         // third message: data (if present)
          if (notification->extra != NULL) {
             message_list->entry[2] = bfromcstr(notification->extra);
             check(message_list->entry[2] != NULL, "bfromcstr 2");
@@ -190,7 +220,6 @@ check_listen_command_cb(const struct Config * config, struct State * state) {
    PGresult * result = NULL;
    int ctl_result;
 
-   debug("check_listen_commnd_cb");
    ConnStatusType status = PQstatus(state->postgres_connection);
    if (status != CONNECTION_OK) { 
       log_err("Invalid status in callback '%s'", CONN_STATUS[status]);
@@ -199,13 +228,11 @@ check_listen_command_cb(const struct Config * config, struct State * state) {
    
    result = PQgetResult(state->postgres_connection);
    if (result == NULL) {
-      debug("result = NULL, query complete");
       ctl_result = set_epoll_ctl_for_postgres(EPOLL_READ, 
                                               check_notifications_cb,
                                               state);
       check(ctl_result == 0, "query complete");
    } else {
-      debug("non-NULL result");
       PQclear(result);
       if (PQconsumeInput(state->postgres_connection) != 1) { 
          log_err("PQconsumeInput %s", 
@@ -226,13 +253,12 @@ error:
 int
 send_listen_command(const struct Config * config, struct State * state) {
 //----------------------------------------------------------------------------
-   bstring bquery;
-   bstring item;
+   bstring bquery = NULL;
+   bstring item = NULL;
    const char * item_str;
    const char * query = NULL;
    int i;
 
-   debug("send_listen_commnd");
    ConnStatusType status = PQstatus(state->postgres_connection);
    check(status == CONNECTION_OK, 
          "Invalid status '%s'", CONN_STATUS[status]);
@@ -279,7 +305,6 @@ heartbeat_timer_cb(const struct Config * config, struct State * state) {
                              &expiration_count, 
                              sizeof(expiration_count));
    check(bytes_read == sizeof(expiration_count), "read timerfd");
-   debug("heartbeat timer fired expiration_count = %ld", expiration_count);
 
    // build the message list
    message_list = bstrListCreate();
@@ -288,10 +313,19 @@ heartbeat_timer_cb(const struct Config * config, struct State * state) {
    check(bstrListAlloc(message_list, message_list_size) == BSTR_OK,
          "bstrListAlloc");
 
+   // first message is topic
    message_list->entry[0] = bfromcstr("heartbeat");
    check(message_list->entry[0] != NULL, "bfromcstr 0");
-   message_list->entry[1] = bfromcstr("meta");
-   check(message_list->entry[1] != NULL, "bfromcstr 1");
+
+   // second message is meta data
+   state->heartbeat_count++;
+   debug("heartbeat %ld", state->heartbeat_count);
+   message_list->entry[1] = \
+      bformat("timestamp=%d;sequence=%d;connected=%d",
+              time(NULL),
+              state->heartbeat_count,
+              state->postgres_connect_time);
+   check(message_list->entry[1] != NULL, "bformat");
    message_list->qty = message_list_size; 
 
    // publish the message list
@@ -351,7 +385,6 @@ postgres_connection_cb(const struct Config * config, struct State * state) {
    int ctl_result;
 
    polling_status = PQconnectPoll(state->postgres_connection);
-   debug("polling status = %s", POLLING_STATUS[polling_status]);
 
    switch (polling_status) {
       case PGRES_POLLING_READING:
@@ -369,6 +402,7 @@ postgres_connection_cb(const struct Config * config, struct State * state) {
          break;
 
       case PGRES_POLLING_OK:
+         state->postgres_connect_time = time(NULL);
          check(send_listen_command(config, state) == 0, "send_listen_command");
          ctl_result = set_epoll_ctl_for_postgres(EPOLL_READ, 
                                                  check_listen_command_cb,
@@ -408,7 +442,6 @@ start_postgres_connection(const struct Config * config, struct State * state) {
          "CONNECTION_BAD");
 
    polling_status = PQconnectPoll(state->postgres_connection);
-   debug("polling status = %s", POLLING_STATUS[polling_status]);
    switch (polling_status) {
 
       case PGRES_POLLING_READING:
@@ -502,6 +535,7 @@ set_up_database_retry(const struct Config * config, struct State * state) {
 
    PQfinish(state->postgres_connection); 
    state->postgres_connection = NULL;
+   state->postgres_connect_time = 0;
 
    state->restart_timer_fd = \
       create_and_set_timer(config->database_retry_interval);
@@ -544,7 +578,7 @@ main(int argc, char **argv, char **envp) {
    // initilize our basic structs
    config = load_config(config_path);
    check(config != NULL, "load_config");
-   state = create_state();
+   state = create_state(config);
    check(state != NULL, "create_state");
 
    zmq_context = zmq_init(config->zmq_thread_pool_size);
@@ -576,7 +610,6 @@ main(int argc, char **argv, char **envp) {
       // we don't treat it as an error
       check(halt_signal || result != -1, "epoll_wait")
       if (result == 0) {
-         debug("poll timeout");
          continue;
       }
       for (i=0; i < result; i++) {

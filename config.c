@@ -119,7 +119,7 @@ load_config(bstring config_path) {
 //----------------------------------------------------------------------------
    struct Config * config = NULL;
    FILE * config_stream = NULL;
-   struct bStream * config_bstream;
+   struct bStream * config_bstream = NULL;
    const char * config_path_cstr = NULL;
    bstring line = bfromcstr("");;
    int read_result;

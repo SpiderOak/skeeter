@@ -53,7 +53,8 @@ def main():
 
     config = _load_config()
 
-    database_connection = psycopg2.connect(database=config["database"])
+    database_connection = \
+        psycopg2.connect(database=config["postgresql-dbname"])
 
     return_value = 0
 
