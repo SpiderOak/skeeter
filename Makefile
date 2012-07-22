@@ -5,7 +5,7 @@ PG_LIBDIR := $(shell $(PG_CONFIG) --libdir)
 
 CFLAGS=-g -O2 -Wall -Wextra -Isrc -I$(PG_INCLUDEDIR) -DNDEBUG $(OPTFLAGS)
 
-SOURCES=$(wildcard *.c)
+SOURCES=$(wildcard src/*.c)
 OBJECTS=$(patsubst %.c,%.o,$(SOURCES))
 
 TARGET=skeeter
