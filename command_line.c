@@ -12,7 +12,6 @@ static const char * optstring = "c:";
 
 //----------------------------------------------------------------------------
 // sets config_path from -c
-// config_path unchanged if one of these arguments is not present
 // returns 0 for success, -1 for failure
 int
 parse_command_line(int argc, char **argv, bstring *config_path) {
