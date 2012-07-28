@@ -43,6 +43,32 @@ library. On Ubuntu: `sudo apt-get install libpq-dev`
 We use a simple ZeroMQ PUB server. You will need the ZeroMQ development
 library. On Ubuntu: `sudo apt-get install libzmq-dev`.
 
+Configuration
+-------------
+
+Skeeter uses a config file to define parameters that are site specific, or
+tunable. By default the config file is located at `${HOME}/.skeeterrc`
+but you can override this from the command line.
+
+We have included a sample config file, `skeeterrc` with comments 
+documentating the options.
+
+Testing/Example Code
+--------------------
+
+We don't have any unit tests (sorry Zed). We do have a test framework 
+consisting of two python programs:
+
+* `test_skeeter_notifyer.py`
+
+    This program reads the skeeterrc config file and posts random
+    notifications to the database.
+
+* `test_skeeter_subscriber.py`
+
+    This program reads the skeeterrc config file and subscribes to the 
+    0mq PUB socket. It logs reported events to stdout. 
+
 Acknowledgements
 ----------------
 
