@@ -13,7 +13,7 @@ import time
 
 import zmq
 
-from rita_skeeter import _load_config
+from test.config import load_config
 
 class SequenceError(Exception):
     pass
@@ -92,7 +92,7 @@ def main():
 
     zeromq_context = zmq.Context()
 
-    config = _load_config()
+    config = load_config()
 
     sub_socket = zeromq_context.socket(zmq.SUB)
 

@@ -12,6 +12,7 @@
 *.a
 
 __pycache__/*
+test/__pycache__/*
 
 # Compiled program
 skeeter

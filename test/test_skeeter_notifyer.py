@@ -14,7 +14,7 @@ from threading import Event
 
 import psycopg2
 
-from rita_skeeter import _load_config
+from test.config import load_config
 
 _low_delay = 0.0
 _high_delay = 3.0
@@ -51,10 +51,9 @@ def main():
     log = logging.getLogger("main")
     log.info("program starts")
 
-    config = _load_config()
+    config = load_config()
 
-    database_connection = \
-        psycopg2.connect(database=config["postgresql-dbname"])
+    database_connection = psycopg2.connect(**config["database-credentials"])
 
     return_value = 0
 
