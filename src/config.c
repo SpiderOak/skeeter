@@ -9,7 +9,7 @@
 
 #include "bstrlib.h"
 #include "config.h"
-#include "dbg.h"
+#include "dbg_syslog.h"
 
 int
 bstr2int(bstring bstr) {

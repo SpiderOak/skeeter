@@ -8,7 +8,7 @@
 #include <signal.h>
 #include <stdbool.h>
 
-#include "dbg.h"
+#include "dbg_syslog.h"
 
 bool halt_signal = false;
 

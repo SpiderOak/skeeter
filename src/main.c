@@ -7,6 +7,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <strings.h>
+#include <syslog.h>
 #include <sys/epoll.h>
 #include <sys/timerfd.h>
 #include <sys/types.h>
@@ -20,7 +21,7 @@
 #include "bstrlib.h"
 #include "command_line.h"
 #include "config.h"
-#include "dbg.h"
+#include "dbg_syslog.h"
 #include "display_strings.h"
 #include "message.h"
 #include "signal_handler.h"
@@ -43,6 +44,7 @@ static const int MAX_EPOLL_EVENTS = 2;
 
 typedef CALLBACK_RESULT_TYPE (* epoll_callback)(const struct Config * config, 
                                                 struct State * state);
+const char * PROGRAM_NAME = "skeeter";
 
 // forward reference for callbacks
 int
@@ -568,6 +570,10 @@ main(int argc, char **argv, char **envp) {
    struct epoll_event event_list[MAX_EPOLL_EVENTS];
    int i;
 
+#if defined(NDEBUG)
+   openlog(PROGRAM_NAME, LOG_CONS | LOG_PERROR, LOG_USER);
+#endif
+
    log_info("program starts");
 
    check(parse_command_line(argc, argv, &config_path) == 0, "parse_");
@@ -631,6 +637,9 @@ main(int argc, char **argv, char **envp) {
    check(zmq_term(zmq_context) == 0, "terminating zeromq")
    check(bdestroy(config_path) == BSTR_OK, "bdestroy");
    log_info("program terminates normally");
+#if defined(NDEBUG)
+   closelog();
+#endif
    return 0;
 
 error:
@@ -638,5 +647,8 @@ error:
    if (config != NULL) clear_config(config);
    if (zmq_context != NULL) zmq_term(zmq_context);
    log_info("program terminates with error");
+#if defined(NDEBUG)
+   closelog();
+#endif
    return 1;
 }

@@ -6,7 +6,7 @@
 #include <unistd.h>
 
 #include "bstrlib.h"
-#include "dbg.h"
+#include "dbg_syslog.h"
 
 static const char * optstring = "c:";
 

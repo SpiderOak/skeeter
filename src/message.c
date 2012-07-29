@@ -7,7 +7,7 @@
 #include <zmq.h>
 
 #include "bstrlib.h"
-#include "dbg.h"
+#include "dbg_syslog.h"
 
 //---------------------------------------------------------------------------
 // send a (possibly multipart) message over the pub socket

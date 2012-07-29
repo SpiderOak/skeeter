@@ -9,7 +9,7 @@
 
 #include <zmq.h>
 
-#include "dbg.h"
+#include "dbg_syslog.h"
 #include "state.h"
 
 //----------------------------------------------------------------------------
