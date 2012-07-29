@@ -32,7 +32,9 @@ Development build:
 Production build
 > `make`
 
-The development build is good for use with [valgrind](http://valgrind.org/)
+* The development build is good for use with [valgrind](http://valgrind.org/)
+* The production build sets NDEBUG which, among other things, causes logging to
+  syslog.
 
 Dependencies
 ------------
