@@ -8,6 +8,7 @@
 
 #include "bstrlib.h"
 #include "dbg_syslog.h"
+#include "zmq_shim.h"
 
 //---------------------------------------------------------------------------
 // send a (possibly multipart) message over the pub socket
@@ -34,7 +35,7 @@ publish_message(const struct bstrList * message_list, void * zmq_pub_socket) {
       memcpy(zmq_msg_data(&message), cstr, message_size);
       check(bcstrfree((char *)cstr) == BSTR_OK, "bcstrfree");
       flag = (i == (message_list->qty)-1) ? 0 : ZMQ_SNDMORE;
-      result = zmq_send(zmq_pub_socket, &message, flag);
+      result = zmq_msg_send(&message, zmq_pub_socket, flag);
       check(result == 0, "zmq_send channel_message");
       check(zmq_msg_close(&message) == 0, "close msessge");
 
