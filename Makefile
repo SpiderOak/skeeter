@@ -13,7 +13,7 @@ TARGET=skeeter
 all: $(TARGET)
 
 skeeter: $(OBJECTS)
-	$(CC) -o $(TARGET) $(OBJECTS) -L$(PG_LIBDIR) -lzmq -lpq
+	$(CC) -o $(TARGET) $(OBJECTS) -L$(PG_LIBDIR) $(OPTFLAGS) -lzmq -lpq
 
 dev: CFLAGS=-g -Wall -Isrc -I$(PG_INCLUDEDIR) -Wall -Wextra $(OPTFLAGS)
 dev: all
