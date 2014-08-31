@@ -16,7 +16,7 @@ static const size_t MAX_POSTGRESQL_OPTIONS = 20;
 struct Config {
    int zmq_thread_pool_size;
    const char *  pub_socket_uri;
-   uint64_t pub_socket_hwm;
+   int pub_socket_hwm;
 
    int epoll_timeout;
    time_t heartbeat_interval;

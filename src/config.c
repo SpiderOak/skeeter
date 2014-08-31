@@ -23,18 +23,6 @@ bstr2int(bstring bstr) {
    return value;
 }
    
-long
-bstr2long(bstring bstr) {
-   char * cstr;
-   long value;
-
-   cstr = bstr2cstr(bstr, '?');
-   value = atol(cstr);
-   bcstrfree(cstr);
-   
-   return value;
-}
-
 //----------------------------------------------------------------------------
 // create a postgres keyword entry from a config line that begins wiht the
 // postgres prefix
@@ -171,7 +159,7 @@ load_config(bstring config_path) {
       } else if (biseqcstr(split_list->entry[0], "pub_socket_uri")) {
          config->pub_socket_uri = bstr2cstr(split_list->entry[1], '?');
       } else if (biseqcstr(split_list->entry[0], "pub_socket_hwm")) {
-         config->pub_socket_hwm = bstr2long(split_list->entry[1]);
+         config->pub_socket_hwm = bstr2int(split_list->entry[1]);
       } else if (biseqcstr(split_list->entry[0], "epoll_timeout")) {
          config->epoll_timeout = bstr2int(split_list->entry[1]);
       } else if (biseqcstr(split_list->entry[0], "heartbeat_interval")) {
