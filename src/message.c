@@ -12,7 +12,7 @@
 
 //---------------------------------------------------------------------------
 // send a (possibly multipart) message over the pub socket
-// all stringws are copied to zmq message structures
+// all strings are copied to zmq message structures
 // it is the responsibility of the caller to clean up message_list
 // return 0 for success, -1 for failure
 int
@@ -36,8 +36,8 @@ publish_message(const struct bstrList * message_list, void * zmq_pub_socket) {
       check(bcstrfree((char *)cstr) == BSTR_OK, "bcstrfree");
       flag = (i == (message_list->qty)-1) ? 0 : ZMQ_SNDMORE;
       result = zmq_msg_send(&message, zmq_pub_socket, flag);
-      check(result == 0, "zmq_send channel_message");
-      check(zmq_msg_close(&message) == 0, "close msessge");
+      check(result != -1, "zmq_send channel_message");
+      check(zmq_msg_close(&message) == 0, "close messge");
 
    }
    return 0;
